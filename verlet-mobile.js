@@ -136,6 +136,13 @@ function buildGrid() {
 // {kind:"emit", x, y, vx, vy}  |  {kind:"kill", x, y, hw, hh}
 
 const objects = [];
+
+// Placed emitters carry their own emission settings and their own clock, so
+// two of them can run at different rates. The side panel's EMITTER group is
+// only the finger emitter now; these are the defaults a fresh one is born with
+// and the mini menu (double-tap in Place mode) edits them per object.
+const EMIT_DEF = { interval: 105, burst: 1, spread: 0, speed: 1200 };
+
 const EMIT_R = 26;        // emitter circle radius, also the aim-drag full-throw
 const KILL_MIN = 14;      // smallest half-extent a drag can leave behind, per axis
 
@@ -463,7 +470,7 @@ function trackPointer(e) {
   point.y = (e.clientY - rect.top) * (H / rect.height);
 }
 
-function spawn(x, y, vx = 0, vy = 0) {
+function spawn(x, y, vx = 0, vy = 0, spread = settings.spread) {
   const limit = settings.maxParticles;
   let i;
   if (count < limit) {
@@ -473,7 +480,7 @@ function spawn(x, y, vx = 0, vy = 0) {
     recycle = recycle + 1 >= limit ? 0 : recycle + 1;
   }
 
-  const s = settings.spread;
+  const s = spread;
   posX[i] = x + (Math.random() - 0.5) * s;
   posY[i] = y + (Math.random() - 0.5) * s;
 
@@ -503,6 +510,7 @@ let mode = "emit";
 let currentStroke = null;
 let placeKind = "emit";   // which object the Place button drops
 let placing = null;       // the object being dragged out right now
+let placingIsNew = false; // false when the drag is re-shaping an existing one
 
 function setMode(next) {
   // Tapping Place while already in it flips between emitter and remover.
@@ -510,6 +518,7 @@ function setMode(next) {
     placeKind = placeKind === "emit" ? "kill" : "emit";
   }
   mode = next;
+  closeMini();
   stopInput();
   canvas.style.cursor = next === "emit" ? "default" : "crosshair";
   updateModeButtons();
@@ -520,9 +529,19 @@ function setMode(next) {
 // for a remover it is the rectangle's half-width and half-height, sized
 // independently so the box can be any aspect.
 function startPlace(x, y) {
+  // Press on an object already there and the drag re-shapes that one (re-aim
+  // an emitter, resize a remover) instead of dropping a new one on top.
+  for (let i = objects.length - 1; i >= 0; i--) {
+    if (objectHit(objects[i], x, y, 0)) {
+      placing = objects[i];
+      placingIsNew = false;
+      return;
+    }
+  }
   placing = placeKind === "emit"
-    ? { kind: "emit", x, y, vx: 0, vy: 0 }
+    ? { kind: "emit", x, y, vx: 0, vy: 0, t: 0, ...EMIT_DEF }
     : { kind: "kill", x, y, hw: KILL_MIN, hh: KILL_MIN };
+  placingIsNew = true;
   objects.push(placing);
 }
 
@@ -535,15 +554,24 @@ function dragPlace(x, y) {
   }
   const d = Math.hypot(dx, dy);
   if (d < 1) { placing.vx = placing.vy = 0; return; }
-  const speed = Math.min(d / EMIT_R, 1) * settings.emitSpeed;
+  const speed = Math.min(d / EMIT_R, 1) * placing.speed;
   placing.vx = (dx / d) * speed;
   placing.vy = (dy / d) * speed;
+  if (placing === miniObj) positionMini();
 }
 
 function objectHit(o, x, y, pad) {
   const rx = (o.kind === "emit" ? EMIT_R : o.hw) + pad;
   const ry = (o.kind === "emit" ? EMIT_R : o.hh) + pad;
   return Math.abs(x - o.x) <= rx && Math.abs(y - o.y) <= ry;
+}
+
+function emitterAt(x, y) {
+  for (let i = objects.length - 1; i >= 0; i--) {
+    const o = objects[i];
+    if (o.kind === "emit" && objectHit(o, x, y, 0)) return o;
+  }
+  return null;
 }
 
 function startStroke(x, y) {
@@ -567,7 +595,10 @@ function eraseAt(x, y) {
   let removed = false;
 
   for (let i = objects.length - 1; i >= 0; i--) {
-    if (objectHit(objects[i], x, y, r)) objects.splice(i, 1);
+    if (objectHit(objects[i], x, y, r)) {
+      if (objects[i] === miniObj) closeMini();
+      objects.splice(i, 1);
+    }
   }
 
   for (let s = strokes.length - 1; s >= 0; s--) {
@@ -585,12 +616,6 @@ function eraseAt(x, y) {
   if (removed) rebuildSegments();
 }
 
-function undoStroke() {
-  if (currentStroke || strokes.length === 0) return;
-  strokes.pop();
-  rebuildSegments();
-}
-
 // ------------------------------------------------------- pointer plumbing
 //
 // One gesture at a time. `active` remembers which pointer owns it so extra
@@ -598,8 +623,10 @@ function undoStroke() {
 // the one that started the stroke.
 
 const active = { id: null, type: null, action: null };
+let lastTap = { t: -1e9, x: 0, y: 0 };
 let lastPenAt = -1e9;
 const PALM_GRACE = 700;   // ms after a pen event during which touches are ignored
+const DOUBLE_TAP = 350;   // ms window for a double-tap, on the canvas or a toolbar button
 
 function penRecentlyUsed() {
   return performance.now() - lastPenAt < PALM_GRACE;
@@ -635,7 +662,7 @@ function abortAction() {
     if (i !== -1) strokes.splice(i, 1);
     rebuildSegments();
   }
-  if (active.action === "place" && placing) {
+  if (active.action === "place" && placing && placingIsNew) {
     const i = objects.indexOf(placing);
     if (i !== -1) objects.splice(i, 1);
   }
@@ -658,6 +685,14 @@ canvas.addEventListener("pointerdown", (e) => {
 
   e.preventDefault();
   trackPointer(e);
+
+  // Double-tap an emitter in Place mode opens its mini menu; the first tap
+  // has already come and gone as a zero-length re-aim, which changes nothing.
+  const tapped = mode === "place" ? emitterAt(point.x, point.y) : null;
+  const doubled = tapped && performance.now() - lastTap.t < DOUBLE_TAP &&
+                  Math.hypot(point.x - lastTap.x, point.y - lastTap.y) < 24;
+  lastTap = { t: performance.now(), x: point.x, y: point.y };
+  if (doubled) { tapped === miniObj ? closeMini() : openMini(tapped); return; }
 
   active.id = e.pointerId;
   active.type = e.pointerType;
@@ -804,7 +839,7 @@ function drawObjects() {
     ctx.stroke();
 
     const speed = Math.hypot(o.vx, o.vy);
-    const t = speed > 0 ? Math.min(speed / settings.emitSpeed, 1) : 0;
+    const t = speed > 0 ? Math.min(speed / o.speed, 1) : 0;
     ctx.beginPath();
     ctx.arc(o.x + (o.vx / (speed || 1)) * EMIT_R * t * 0.72,
             o.y + (o.vy / (speed || 1)) * EMIT_R * t * 0.72,
@@ -835,6 +870,99 @@ function draw() {
   drawEraserRing();
 }
 
+// -------------------------------------------------- emitter mini menu
+//
+// Double-tap an emitter in Place mode to edit that one emitter without going
+// near the side panel. Same .row markup as the panel, so the sliders inherit
+// its fat touch targets. Opens on the side away from the emission, right if
+// there is no aim yet, and is clamped to stay on screen.
+
+const mini = document.getElementById("mini");
+let miniObj = null;
+
+const MINI_ROWS = [
+  // Rate reads the interval backwards, so dragging right emits faster.
+  { label: "Rate", min: 5, max: 300, step: 5,
+    get: (o) => 305 - o.interval, set: (o, v) => { o.interval = 305 - v; } },
+  { label: "Particles", min: 1, max: 40, step: 1,
+    get: (o) => o.burst, set: (o, v) => { o.burst = v; } },
+  { label: "Scatter", min: 0, max: 60, step: 1,
+    get: (o) => o.spread, set: (o, v) => { o.spread = v; } },
+  // Speed rescales the aim vector the drag produced, keeping its direction —
+  // and becomes the emitter's new full-throw, so a later re-aim matches it.
+  // Floored above zero because a zero vector has no direction left to restore.
+  { label: "Speed", min: 50, max: 4000, step: 50,
+    get: (o) => Math.round(Math.hypot(o.vx, o.vy)) || o.speed,
+    set: (o, v) => {
+      const d = Math.hypot(o.vx, o.vy);
+      o.speed = v;
+      if (d) { o.vx = (o.vx / d) * v; o.vy = (o.vy / d) * v; }
+    } },
+];
+
+// Label flanked by \u2212/+ steppers, slider underneath. Shared by the emitter
+// menu and the toolbar panels; the caller supplies where the value goes.
+function sliderRow(parent, spec) {
+  const row = document.createElement("div");
+  row.className = "row";
+
+  const lab = document.createElement("div");
+  lab.className = "lab";
+  const minus = document.createElement("button");
+  minus.textContent = "\u2212";
+  const plus = document.createElement("button");
+  plus.textContent = "+";
+  const name = document.createElement("label");
+  name.textContent = spec.label;
+  lab.append(minus, name, plus);
+
+  const inputs = document.createElement("div");
+  inputs.className = "inputs";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = spec.min;
+  range.max = spec.max;
+  range.step = spec.step;
+  inputs.append(range);
+
+  const apply = (v) => {
+    range.value = Math.min(spec.max, Math.max(spec.min, v));
+    spec.set(+range.value);
+  };
+  range.addEventListener("input", () => spec.set(+range.value));
+  minus.addEventListener("click", () => apply(+range.value - spec.step));
+  plus.addEventListener("click", () => apply(+range.value + spec.step));
+
+  row.append(lab, inputs);
+  parent.append(row);
+  return range;
+}
+
+const miniInputs = MINI_ROWS.map((r) =>
+  sliderRow(mini, { ...r, set: (v) => { if (miniObj) r.set(miniObj, v); } }));
+
+function openMini(o) {
+  miniObj = o;
+  MINI_ROWS.forEach((r, i) => { miniInputs[i].value = r.get(o); });
+  mini.hidden = false;
+  positionMini();
+}
+
+function closeMini() {
+  miniObj = null;
+  mini.hidden = true;
+}
+
+function positionMini() {
+  const rect = canvas.getBoundingClientRect();
+  const w = mini.offsetWidth, h = mini.offsetHeight;
+  const gap = EMIT_R + 14;
+  const x = miniObj.vx > 0 ? miniObj.x - gap - w : miniObj.x + gap;
+  const y = miniObj.y - h / 2;
+  mini.style.left = Math.min(Math.max(rect.left + x, 4), innerWidth - w - 4) + "px";
+  mini.style.top = Math.min(Math.max(rect.top + y, 4), innerHeight - h - 4) + "px";
+}
+
 // ------------------------------------------------------------------ panel
 
 const CONTROLS = [
@@ -854,18 +982,6 @@ const CONTROLS = [
   { key: "radius", label: "Radius — rebuilds grid", min: 1, max: 12, step: 0.5 },
   { key: "maxParticles", label: "Max particles — recycles oldest", min: 100, max: MAX_PARTICLES, step: 100 },
 
-  { group: "Emitter" },
-  { key: "emitInterval", label: "Emit every (ms)", min: 5, max: 300, step: 5 },
-  { key: "emitPerBurst", label: "Particles per burst", min: 1, max: 40, step: 1 },
-  { key: "spread", label: "Spawn scatter (px)", min: 0, max: 60, step: 1 },
-  { key: "emitSpeed", label: "Launch speed at full aim (px/s)", min: 0, max: 4000, step: 50 },
-
-  { group: "Drawn lines" },
-  { key: "lineThickness", label: "Stroke thickness (px)", min: 1, max: 40, step: 1 },
-  { key: "lineFriction", label: "Surface friction", min: 0, max: 1, step: 0.01 },
-  { key: "lineBounce", label: "Bounciness", min: 0, max: 1, step: 0.01 },
-  { key: "drawSpacing", label: "Stroke detail (px/point)", min: 2, max: 30, step: 1 },
-  { key: "eraserSize", label: "Eraser size (px)", min: 8, max: 160, step: 2 },
 ];
 
 const panel = document.getElementById("panel");
@@ -896,49 +1012,6 @@ function updateModeButtons() {
   modeButtons.place.textContent =
     placeKind === "emit" ? "Place: Emitter" : "Place: Remover";
 }
-
-for (const key in modeButtons) {
-  modeButtons[key].addEventListener("click", () => setMode(key));
-}
-
-document.getElementById("undo").addEventListener("click", undoStroke);
-document.getElementById("clear").addEventListener("click", () => {
-  count = 0;
-  recycle = 0;
-  strokes.length = 0;
-  objects.length = 0;
-  rebuildSegments();
-});
-document.getElementById("gear").addEventListener("click", () => {
-  panel.classList.add("open");
-  stopInput();
-});
-document.getElementById("close").addEventListener("click", () => {
-  panel.classList.remove("open");
-});
-
-// Drag the toolbar anywhere. Switching to left/top pins it where it is dropped;
-// the CSS centring transform has to go with it.
-const bar = document.getElementById("bar");
-document.getElementById("grip").addEventListener("pointerdown", (e) => {
-  const r = bar.getBoundingClientRect();
-  const dx = e.clientX - r.left;
-  const dy = e.clientY - r.top;
-  e.target.setPointerCapture(e.pointerId);
-  const move = (ev) => {
-    const x = Math.min(Math.max(ev.clientX - dx, 0), innerWidth - r.width);
-    const y = Math.min(Math.max(ev.clientY - dy, 0), innerHeight - r.height);
-    bar.style.cssText = `left:${x}px;top:${y}px;bottom:auto;transform:none`;
-  };
-  const up = () => {
-    e.target.removeEventListener("pointermove", move);
-    e.target.removeEventListener("pointerup", up);
-    e.target.removeEventListener("pointercancel", up);
-  };
-  e.target.addEventListener("pointermove", move);
-  e.target.addEventListener("pointerup", up);
-  e.target.addEventListener("pointercancel", up);
-});
 
 function decimalsFor(step) {
   const s = String(step);
@@ -1009,6 +1082,132 @@ for (const control of CONTROLS) {
   inputs.append(slider, number);
   inputsByKey[control.key] = [slider, number];
 }
+
+// ------------------------------------------- toolbar mini panels
+//
+// Double-tap a mode button to hang that mode's settings above the toolbar, so
+// the side panel keeps only world/solver/particles. Same .mini shell as the
+// emitter menu, one open at a time, and closed whenever the toolbar or the
+// viewport moves under it.
+
+const TOOL_PANELS = {
+  emit: [
+    { key: "emitInterval", label: "Rate", min: 5, max: 300, step: 5 },
+    { key: "emitPerBurst", label: "Particles", min: 1, max: 40, step: 1 },
+    { key: "spread", label: "Scatter", min: 0, max: 60, step: 1 },
+  ],
+  draw: [
+    { key: "lineThickness", label: "Thickness", min: 1, max: 40, step: 1 },
+    { key: "lineFriction", label: "Friction", min: 0, max: 1, step: 0.01 },
+    { key: "lineBounce", label: "Bounciness", min: 0, max: 1, step: 0.01 },
+    { key: "drawSpacing", label: "Detail", min: 2, max: 30, step: 1 },
+  ],
+  erase: [
+    { key: "eraserSize", label: "Eraser size (px)", min: 8, max: 160, step: 2 },
+  ],
+};
+
+const toolPanels = {};
+let openTool = null;
+
+for (const key in TOOL_PANELS) {
+  const el = document.createElement("div");
+  el.className = "mini tool";
+  el.hidden = true;
+
+  for (const c of TOOL_PANELS[key]) {
+    const range = sliderRow(el, { ...c, set: (v) => setSetting(c.key, v) });
+    range.value = settings[c.key];
+    (inputsByKey[c.key] ||= []).push(range);
+  }
+
+  document.body.append(el);
+  toolPanels[key] = el;
+}
+
+function closeTool() {
+  if (openTool) openTool.hidden = true;
+  openTool = null;
+}
+
+function toggleTool(key) {
+  const el = toolPanels[key];
+  const wasOpen = openTool === el;
+  closeTool();
+  if (!el || wasOpen) return;
+
+  el.hidden = false;
+  openTool = el;
+
+  // Above its own button, dropping below when the toolbar sits near the top.
+  const r = modeButtons[key].getBoundingClientRect();
+  const w = el.offsetWidth, h = el.offsetHeight, gap = 8;
+  const top = r.top - h - gap < 4 ? r.bottom + gap : r.top - h - gap;
+  el.style.left = Math.min(Math.max(r.left, 4), innerWidth - w - 4) + "px";
+  el.style.top = Math.min(top, innerHeight - h - 4) + "px";
+}
+
+// Second tap on the same button within DOUBLE_TAP opens its panel instead of
+// re-running setMode (which would flip Place's kind back).
+let lastModeTap = "", lastModeTapAt = 0;
+
+for (const key in modeButtons) {
+  modeButtons[key].addEventListener("click", () => {
+    const now = performance.now();
+    if (lastModeTap === key && now - lastModeTapAt < DOUBLE_TAP) {
+      lastModeTap = "";
+      toggleTool(key);
+      return;
+    }
+    lastModeTap = key;
+    lastModeTapAt = now;
+    setMode(key);
+  });
+}
+
+document.getElementById("clear").addEventListener("click", () => {
+  count = 0;
+  recycle = 0;
+});
+document.getElementById("clear-all").addEventListener("click", () => {
+  count = 0;
+  recycle = 0;
+  strokes.length = 0;
+  objects.length = 0;
+  closeMini();
+  rebuildSegments();
+});
+document.getElementById("gear").addEventListener("click", () => {
+  panel.classList.toggle("open");
+  stopInput();
+});
+document.getElementById("close").addEventListener("click", () => {
+  panel.classList.remove("open");
+});
+
+// Drag the toolbar anywhere. Switching to left/top pins it where it is dropped;
+// the CSS centring transform has to go with it.
+const bar = document.getElementById("bar");
+document.getElementById("grip").addEventListener("pointerdown", (e) => {
+  const r = bar.getBoundingClientRect();
+  const dx = e.clientX - r.left;
+  const dy = e.clientY - r.top;
+  e.target.setPointerCapture(e.pointerId);
+  closeTool();
+  const move = (ev) => {
+    const x = Math.min(Math.max(ev.clientX - dx, 0), innerWidth - r.width);
+    const y = Math.min(Math.max(ev.clientY - dy, 0), innerHeight - r.height);
+    bar.style.cssText = `left:${x}px;top:${y}px;bottom:auto;transform:none`;
+  };
+  const up = () => {
+    e.target.removeEventListener("pointermove", move);
+    e.target.removeEventListener("pointerup", up);
+    e.target.removeEventListener("pointercancel", up);
+  };
+  e.target.addEventListener("pointermove", move);
+  e.target.addEventListener("pointerup", up);
+  e.target.addEventListener("pointercancel", up);
+});
 
 const resetButton = document.createElement("button");
 resetButton.className = "wide";
@@ -1257,6 +1456,8 @@ hint.textContent =
   "Emit sprays particles, Draw lays down a collidable line, Erase rubs out lines and " +
   "placed objects. Place drops an emitter (drag to aim — further out is faster) or a " +
   "remover box (drag to size its width and height); tap Place again to switch which. " +
+  "Dragging from an object already placed re-aims or resizes it instead of adding one, " +
+  "and double-tapping a placed emitter opens its own rate, particles, scatter and speed. " +
   "With an Apple Pencil, resting your palm on the glass is ignored, and flipping " +
   "to the eraser end erases without switching mode.";
 panelBody.append(hint);
@@ -1270,7 +1471,6 @@ let lastTime = performance.now();
 
 let frames = 0;
 let fpsClock = lastTime;
-let placedTimer = 0;
 
 function frame(now) {
   const dt = Math.min(now - lastTime, MAX_CATCHUP);
@@ -1285,16 +1485,16 @@ function frame(now) {
     }
   }
 
-  // Placed emitters share one clock, so they all fire on the same beat.
+  // Each placed emitter runs its own clock at its own rate.
   // Skipped during a benchmark run, which owns `count` itself.
   if (objects.length && !bench.on) {
-    placedTimer += dt;
-    while (placedTimer >= settings.emitInterval) {
-      for (const o of objects) {
-        if (o.kind !== "emit") continue;
-        for (let n = 0; n < settings.emitPerBurst; n++) spawn(o.x, o.y, o.vx, o.vy);
+    for (const o of objects) {
+      if (o.kind !== "emit") continue;
+      o.t += dt;
+      while (o.t >= o.interval) {
+        for (let n = 0; n < o.burst; n++) spawn(o.x, o.y, o.vx, o.vy, o.spread);
+        o.t -= o.interval;
       }
-      placedTimer -= settings.emitInterval;
     }
   }
 
