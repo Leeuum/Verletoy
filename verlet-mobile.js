@@ -1450,17 +1450,6 @@ try {
 }
 if (benchResult) showBenchResult("Last run: ");
 
-const hint = document.createElement("div");
-hint.className = "hint";
-hint.textContent =
-  "Emit sprays particles, Draw lays down a collidable line, Erase rubs out lines and " +
-  "placed objects. Place drops an emitter (drag to aim — further out is faster) or a " +
-  "remover box (drag to size its width and height); tap Place again to switch which. " +
-  "Dragging from an object already placed re-aims or resizes it instead of adding one, " +
-  "and double-tapping a placed emitter opens its own rate, particles, scatter and speed. " +
-  "With an Apple Pencil, resting your palm on the glass is ignored, and flipping " +
-  "to the eraser end erases without switching mode.";
-panelBody.append(hint);
 
 // -------------------------------------------------------------- main loop
 
