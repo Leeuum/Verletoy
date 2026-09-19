@@ -150,21 +150,21 @@
       touch-action: manipulation;
       cursor: pointer;
     }
-    #bar button.active {
-      background: var(--btn-on-bg);
-      border-color: var(--btn-on-border);
-      color: var(--btn-on-text);
-    }
+    #bar button.active { background: var(--btn-on-bg); }
     #bar button:active { background: var(--btn-on-bg); }
-    /* Small gear hugging its mode button; opens that mode's settings. */
+    /* Gear joined onto its mode button as one split button. */
+    #bar button:has(+ .cog) {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
     #bar button.cog {
       min-width: 0;
-      padding: 0 calc(4px * var(--scale));
-      margin-left: calc(var(--bar-gap) * var(--scale) * -0.6);
-      background: none;
-      border-color: transparent;
-      font-size: calc(var(--btn-font) * var(--scale) * 0.85);
-      opacity: 0.7;
+      padding: 0 calc(6px * var(--scale));
+      margin-left: calc(var(--bar-gap) * var(--scale) * -1);
+      border-left-width: 0;
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+      font-size: calc(var(--btn-font) * var(--scale) * 0.7);
     }
     #bar #grip {
       flex: 0 0 auto;
