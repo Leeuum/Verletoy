@@ -32,6 +32,11 @@ const settings = {
   walls: true,
   strokeGravity: false,
   strokeCollide: false,
+  lineGravity: 1,       // × world gravity, for falling lines only
+  lineWeight: 1,        // × a line's natural mass, vs particles
+  lineBodyBounce: 0.1,  // falling line vs edges and other lines
+  lineBodyFriction: 0.5,
+  lineSpinDrag: 0.999,  // per-substep spin kept, like damping for rotation
 
   substeps: 3,
   passes: 2,
@@ -406,7 +411,10 @@ function collideLines(h) {
       prevY[i] = py - (nvy + lvy);
 
       // Equal and opposite: whatever the particle (mass 1) gained, the line loses.
-      if (b && b.m) hitBody(b, hx, hy, (vx - nvx) / h, (vy - nvy) / h);
+      if (b && b.m) {
+        const k = 1 / (h * settings.lineWeight);
+        hitBody(b, hx, hy, (vx - nvx) * k, (vy - nvy) * k);
+      }
     }
 
     posX[i] = px;
@@ -456,7 +464,6 @@ function constrainWalls() {
 // keep treating strokes[] as the source of truth. Particles have mass 1; a
 // stroke weighs its area in particle areas.
 // With strokeCollide on too, strokes also knock into each other.
-const BODY_FRICTION = 0.5;   // stroke vs canvas edge
 
 function initBody(pts) {
   const r = settings.radius;
@@ -488,15 +495,16 @@ function hitBody(b, x, y, jx, jy) {
 }
 
 function moveStrokes(h) {
-  const g = settings.gravity * h;
+  const g = settings.gravity * settings.lineGravity * h;
   const d = settings.damping;
+  const spin = settings.lineSpinDrag;
   for (let o = strokes.length - 1; o >= 0; o--) {
     const pts = strokes[o];
     if (pts === currentStroke || pts.length < 4) continue;
     if (pts.m === undefined) initBody(pts);
 
     pts.vy += g;
-    pts.vx *= d; pts.vy *= d; pts.w *= d;
+    pts.vx *= d; pts.vy *= d; pts.w *= spin;
     const ncx = pts.cx + pts.vx * h, ncy = pts.cy + pts.vy * h;
     const cos = Math.cos(pts.w * h), sin = Math.sin(pts.w * h);
     for (let k = 0; k < pts.length; k += 2) {
@@ -554,7 +562,7 @@ function collideStrokes() {
 // towards A, so `sign` flips it when P is B.
 function pointsVsSegments(P, S, deep, sign) {
   const t = settings.lineThickness, tSq = t * t;
-  const e = settings.lineBounce;
+  const e = settings.lineBodyBounce;
   for (let k = 0; k < P.length; k += 2) {
     const px = P[k], py = P[k + 1];
     if (px < S.x0 - t || px > S.x1 + t || py < S.y0 - t || py > S.y1 + t) continue;
@@ -592,7 +600,7 @@ function pointsVsSegments(P, S, deep, sign) {
     const pt = prx * ty - pry * tx, st = srx * ty - sry * tx;
     const kt = 1 / P.m + 1 / S.m + pt * pt / P.I + st * st / S.I;
     let jt = -(rvx * tx + rvy * ty) / kt;
-    const cap = jn * BODY_FRICTION;
+    const cap = jn * settings.lineBodyFriction;
     if (jt > cap) jt = cap; else if (jt < -cap) jt = -cap;
     const jx = nx * jn + tx * jt, jy = ny * jn + ty * jt;
     hitBody(P, px, py, jx, jy);
@@ -609,7 +617,7 @@ function shiftBody(b, sx, sy) {
 // moving into the edge, then the whole stroke is shifted back inside.
 function wallBody(b) {
   const pad = settings.lineThickness * 0.5;
-  const e = settings.lineBounce;
+  const e = settings.lineBodyBounce;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let k = 0; k < b.length; k += 2) {
     const x = b[k], y = b[k + 1];
@@ -629,7 +637,7 @@ function wallBody(b) {
     const tx = -ny, ty = nx;
     const rt = rx * ty - ry * tx;
     let jt = -(pvx * tx + pvy * ty) / (1 / b.m + rt * rt / b.I);
-    const cap = jn * BODY_FRICTION;
+    const cap = jn * settings.lineBodyFriction;
     if (jt > cap) jt = cap; else if (jt < -cap) jt = -cap;
     hitBody(b, x, y, nx * jn + tx * jt, ny * jn + ty * jt);
   }
@@ -1182,14 +1190,21 @@ const CONTROLS = [
   { key: "damping", label: "Damping (air drag)", min: 0.9, max: 1, step: 0.001 },
   { key: "maxSpeed", label: "Speed limit (px/s)", min: 500, max: 10000, step: 100 },
   { key: "walls", label: "Canvas collisions", toggle: true },
-  { key: "strokeGravity", label: "Drawn lines fall", toggle: true },
-  { key: "strokeCollide", label: "Falling lines hit each other", toggle: true },
 
   { group: "Solver" },
   { key: "substeps", label: "Substeps per frame", min: 1, max: 12, step: 1 },
   { key: "passes", label: "Relaxation passes", min: 1, max: 8, step: 1 },
   { key: "response", label: "Collision stiffness", min: 0.05, max: 1, step: 0.01 },
   { key: "wallFriction", label: "Wall friction", min: 0.5, max: 1, step: 0.005 },
+
+  { group: "Drawn lines" },
+  { key: "strokeGravity", label: "Drawn lines fall", toggle: true },
+  { key: "strokeCollide", label: "Falling lines hit each other", toggle: true },
+  { key: "lineGravity", label: "Gravity (× world)", min: -2, max: 4, step: 0.05 },
+  { key: "lineWeight", label: "Weight vs particles", min: 0.05, max: 20, step: 0.05 },
+  { key: "lineBodyBounce", label: "Bounciness", min: 0, max: 1, step: 0.01 },
+  { key: "lineBodyFriction", label: "Friction", min: 0, max: 2, step: 0.01 },
+  { key: "lineSpinDrag", label: "Spin damping", min: 0.95, max: 1, step: 0.001 },
 
   { group: "Particles" },
   { key: "radius", label: "Radius — rebuilds grid", min: 1, max: 12, step: 0.5 },
