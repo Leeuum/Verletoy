@@ -184,10 +184,17 @@ function rebuildSegments() {
   for (let o = 0; o < strokes.length; o++) {
     const pts = strokes[o];
     for (let k = 2; k < pts.length; k += 2) {
+      if (isGap(pts, k)) continue;
       addSegment(pts[k - 2], pts[k - 1], pts[k], pts[k + 1], o);
     }
   }
   segGridDirty = true;
+}
+
+// Merged strokes (see mergeCrossing) are several polylines in one array,
+// separated by a NaN, NaN point. The segment into or out of it is not a line.
+function isGap(pts, k) {
+  return Number.isNaN(pts[k]) || Number.isNaN(pts[k - 2]);
 }
 
 function segPad() {
@@ -470,6 +477,7 @@ function initBody(pts) {
   const density = settings.lineThickness / (Math.PI * r * r);
   let m = 0, cx = 0, cy = 0;
   for (let k = 2; k < pts.length; k += 2) {
+    if (isGap(pts, k)) continue;
     const len = Math.hypot(pts[k] - pts[k - 2], pts[k + 1] - pts[k - 1]) || 1e-3;
     const sm = len * density;
     m += sm;
@@ -479,6 +487,7 @@ function initBody(pts) {
   cx /= m; cy /= m;
   let I = 0;
   for (let k = 2; k < pts.length; k += 2) {
+    if (isGap(pts, k)) continue;
     const len = Math.hypot(pts[k] - pts[k - 2], pts[k + 1] - pts[k - 1]) || 1e-3;
     const mx = (pts[k] + pts[k - 2]) * 0.5 - cx, my = (pts[k + 1] + pts[k - 1]) * 0.5 - cy;
     I += len * density * (mx * mx + my * my + len * len / 12);
@@ -498,6 +507,7 @@ function moveStrokes(h) {
   const g = settings.gravity * settings.lineGravity * h;
   const d = settings.damping;
   const spin = settings.lineSpinDrag;
+  mergeCrossing();
   for (let o = strokes.length - 1; o >= 0; o--) {
     const pts = strokes[o];
     if (pts === currentStroke || pts.length < 4) continue;
@@ -524,6 +534,65 @@ function moveStrokes(h) {
   }
   rebuildSegments();
   buildSegGrid();
+}
+
+// A freshly finished stroke that overlaps other strokes swallows them and
+// becomes one rigid body, so crossing lines don't fight to separate. Momentum
+// (linear and angular) is carried over from any that were already moving.
+// Also runs for every stroke when "Drawn lines fall" is switched on.
+function mergeCrossing() {
+  for (let i = 0; i < strokes.length; i++) {
+    const F = strokes[i];
+    if (F.m !== undefined || F === currentStroke || F.length < 4) continue;
+    const hits = strokes.filter((A) => A !== F && A !== currentStroke && A.length >= 4 && overlaps(A, F));
+    if (hits.length === 0) continue;
+
+    for (const A of hits) F.push(NaN, NaN, ...A);
+    initBody(F);
+    let px = 0, py = 0, L = 0;
+    for (const A of hits) {
+      if (!A.m) continue;
+      px += A.m * A.vx; py += A.m * A.vy;
+      L += A.I * A.w + A.m * ((A.cx - F.cx) * A.vy - (A.cy - F.cy) * A.vx);
+    }
+    F.vx = px / F.m; F.vy = py / F.m; F.w = L / F.I;
+
+    for (const A of hits) strokes.splice(strokes.indexOf(A), 1);
+    i = strokes.indexOf(F);
+  }
+}
+
+// Do any two segments of A and B come within one line thickness (i.e. the
+// drawn lines visibly overlap)? Gap segments are NaN and never match.
+// ponytail: segments × segments; fine for hand-drawn strokes, grid it if slow.
+function overlaps(A, B) {
+  const t = settings.lineThickness, tSq = t * t;
+  for (let i = 2; i < A.length; i += 2) {
+    const ax = A[i - 2], ay = A[i - 1], bx = A[i], by = A[i + 1];
+    for (let j = 2; j < B.length; j += 2) {
+      const cx = B[j - 2], cy = B[j - 1], dx = B[j], dy = B[j + 1];
+      if (Math.max(ax, bx) + t < Math.min(cx, dx) || Math.max(cx, dx) + t < Math.min(ax, bx) ||
+          Math.max(ay, by) + t < Math.min(cy, dy) || Math.max(cy, dy) + t < Math.min(ay, by)) continue;
+      if (segDistSq(ax, ay, cx, cy, dx, dy) < tSq || segDistSq(bx, by, cx, cy, dx, dy) < tSq ||
+          segDistSq(cx, cy, ax, ay, bx, by) < tSq || segDistSq(dx, dy, ax, ay, bx, by) < tSq) return true;
+      // Proper crossing: each segment's ends lie on opposite sides of the other.
+      const d1 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+      const d2 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+      const d3 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+      const d4 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+      if (d1 * d2 < 0 && d3 * d4 < 0) return true;
+    }
+  }
+  return false;
+}
+
+function segDistSq(px, py, ax, ay, bx, by) {
+  const ex = bx - ax, ey = by - ay;
+  const lenSq = ex * ex + ey * ey;
+  let u = lenSq > 0 ? ((px - ax) * ex + (py - ay) * ey) / lenSq : 0;
+  if (u < 0) u = 0; else if (u > 1) u = 1;
+  const dx = px - ax - ex * u, dy = py - ay - ey * u;
+  return dx * dx + dy * dy;
 }
 
 // Each stroke's points are tested against the other stroke's segments (both
@@ -1041,7 +1110,10 @@ function drawStrokes() {
     }
     ctx.beginPath();
     ctx.moveTo(pts[0], pts[1]);
-    for (let k = 2; k < pts.length; k += 2) ctx.lineTo(pts[k], pts[k + 1]);
+    for (let k = 2; k < pts.length; k += 2) {
+      if (Number.isNaN(pts[k])) { k += 2; ctx.moveTo(pts[k], pts[k + 1]); }
+      else ctx.lineTo(pts[k], pts[k + 1]);
+    }
     ctx.stroke();
   }
 }
