@@ -879,7 +879,7 @@ function applyRemovers() {
 
 let mode = "emit";
 let currentStroke = null;
-let drawKind = "free";    // double-tap Draw cycles free → line → circle
+let drawKind = "free";    // free / line / circle, picked in the Draw panel
 let placeKind = "emit";   // which object the Place button drops
 let placing = null;       // the object being dragged out right now
 let placingIsNew = false; // false when the drag is re-shaping an existing one
@@ -1461,6 +1461,7 @@ function updateModeButtons() {
     modeButtons[key].classList.toggle("active", key === mode);
   }
   modeButtons.draw.textContent = { free: "Draw", line: "Line", circle: "Circle" }[drawKind];
+  for (const k in kindButtons) kindButtons[k].classList.toggle("active", k === drawKind);
   modeButtons.place.textContent =
     { emit: "Place: Emitter", kill: "Place: Remover", anchor: "Place: Anchor" }[placeKind];
 }
@@ -1470,7 +1471,10 @@ const inputsByKey = {};
 
 function setSetting(key, value) {
   settings[key] = value;
-  for (const el of inputsByKey[key] || []) el.value = value;
+  for (const el of inputsByKey[key] || []) {
+    if (el.type === "checkbox") el.checked = value;
+    else el.value = value;
+  }
   onSettingChanged();
 }
 
@@ -1497,12 +1501,9 @@ for (const control of CONTROLS) {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.checked = settings[control.key];
-    box.addEventListener("input", () => {
-      settings[control.key] = box.checked;
-      onSettingChanged();
-    });
+    box.addEventListener("input", () => setSetting(control.key, box.checked));
     inputs.append(box);
-    inputsByKey[control.key] = [];
+    (inputsByKey[control.key] ||= []).push(box);
     continue;
   }
 
@@ -1547,6 +1548,8 @@ const TOOL_PANELS = {
     { key: "lineFriction", label: "Friction", min: 0, max: 1, step: 0.01 },
     { key: "lineBounce", label: "Bounciness", min: 0, max: 1, step: 0.01 },
     { key: "drawSpacing", label: "Detail", min: 2, max: 30, step: 1 },
+    { key: "strokeGravity", label: "Drawn lines fall", toggle: true },
+    { key: "strokeCollide", label: "Falling lines hit each other", toggle: true },
     { key: "lineLock", label: "Locked direction", toggle: true },
     { key: "circleLock", label: "Perfect circle", toggle: true },
   ],
@@ -1561,6 +1564,7 @@ let openTool = null;
 for (const key in TOOL_PANELS) {
   const el = document.createElement("div");
   el.className = "mini tool";
+  el.dataset.tool = key;
   el.hidden = true;
 
   for (const c of TOOL_PANELS[key]) {
@@ -1570,9 +1574,10 @@ for (const key in TOOL_PANELS) {
       const box = document.createElement("input");
       box.type = "checkbox";
       box.checked = settings[c.key];
-      box.addEventListener("input", () => { settings[c.key] = box.checked; });
+      box.addEventListener("input", () => setSetting(c.key, box.checked));
       row.append(box, c.label);
       el.append(row);
+      (inputsByKey[c.key] ||= []).push(box);
       continue;
     }
     const range = sliderRow(el, { ...c, set: (v) => setSetting(c.key, v) });
@@ -1583,6 +1588,25 @@ for (const key in TOOL_PANELS) {
   document.body.append(el);
   toolPanels[key] = el;
 }
+
+// Draw tool variations: a row of icon boxes at the top of the Draw panel.
+const KIND_ICONS = {
+  free: '<path d="M4 20l4-1 11-11-3-3L5 16z"/>',
+  line: '<path d="M5 19L19 5"/>',
+  circle: '<circle cx="12" cy="12" r="7"/>',
+};
+const kindButtons = {};
+const kindRow = document.createElement("div");
+kindRow.className = "kinds";
+for (const k in KIND_ICONS) {
+  const b = document.createElement("button");
+  b.title = { free: "Freehand", line: "Line", circle: "Circle" }[k];
+  b.innerHTML = '<svg viewBox="0 0 24 24">' + KIND_ICONS[k] + "</svg>";
+  b.addEventListener("click", () => { drawKind = k; setMode("draw"); });
+  kindRow.append(b);
+  kindButtons[k] = b;
+}
+toolPanels.draw.prepend(kindRow);
 
 function closeTool() {
   if (openTool) openTool.hidden = true;
@@ -1606,17 +1630,9 @@ function toggleTool(key) {
   el.style.top = Math.min(top, innerHeight - h - 4) + "px";
 }
 
-// Double-tap Draw cycles freehand → straight Line → Circle.
-// Timed by hand rather than dblclick, which iOS doesn't fire on buttons.
-let lastDrawTap = 0;
-
 for (const key in modeButtons) {
   modeButtons[key].addEventListener("click", () => {
     if (openTool !== toolPanels[key]) closeTool();
-    if (key === "draw" && mode === "draw" && performance.now() - lastDrawTap < 350) {
-      drawKind = { free: "line", line: "circle", circle: "free" }[drawKind];
-      lastDrawTap = 0;
-    } else if (key === "draw") lastDrawTap = performance.now();
     setMode(key);
   });
 }

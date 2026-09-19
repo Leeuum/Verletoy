@@ -264,7 +264,22 @@
     .mini.tool .lab,
     .mini.tool .lab button { color: var(--label); }
     .mini.tool .lab { justify-content: center; gap: calc(6px * var(--scale)); }
-    .mini.tool .row.toggle { justify-content: center; }
+    .mini.tool .row.toggle { justify-content: flex-start; text-align: left; }
+    .mini .kinds { display: flex; gap: calc(6px * var(--scale)); margin-bottom: calc(8px * var(--scale)); }
+    .mini .kinds button {
+      width: calc(34px * var(--scale));
+      height: calc(34px * var(--scale));
+      padding: calc(6px * var(--scale));
+      background: none;
+      border: calc(var(--border-w) * var(--scale)) solid var(--track-bg);
+      border-radius: calc(var(--btn-radius) * var(--scale));
+      color: var(--label);
+      touch-action: manipulation;
+      cursor: pointer;
+    }
+    .mini .kinds button.active { background: var(--btn-on-bg); border-color: var(--thumb-col); }
+    .mini .kinds svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .mini.tool[data-tool=draw] { width: calc(248px * var(--scale)); }
     .mini.tool input[type=range]::-webkit-slider-thumb { background: var(--thumb-col); }
     .mini.tool input[type=range]::-moz-range-thumb { background: var(--thumb-col); }
 
