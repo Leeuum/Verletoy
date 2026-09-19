@@ -30,6 +30,7 @@ const settings = {
   maxSpeed: 3000,
 
   walls: true,
+  strokeGravity: false,
 
   substeps: 3,
   passes: 2,
@@ -153,6 +154,7 @@ const segAX = new Float32Array(MAX_SEGMENTS);
 const segAY = new Float32Array(MAX_SEGMENTS);
 const segBX = new Float32Array(MAX_SEGMENTS);
 const segBY = new Float32Array(MAX_SEGMENTS);
+const segStroke = new Int32Array(MAX_SEGMENTS); // index into strokes[]
 let segCount = 0;
 
 const strokes = [];
@@ -162,19 +164,21 @@ let segCursor = new Int32Array(0);
 let segItems = new Int32Array(0);
 let segGridDirty = true;
 
-function addSegment(ax, ay, bx, by) {
+function addSegment(ax, ay, bx, by, owner) {
   if (segCount >= MAX_SEGMENTS) return;
   const s = segCount++;
   segAX[s] = ax; segAY[s] = ay;
   segBX[s] = bx; segBY[s] = by;
+  segStroke[s] = owner;
   segGridDirty = true;
 }
 
 function rebuildSegments() {
   segCount = 0;
-  for (const pts of strokes) {
+  for (let o = 0; o < strokes.length; o++) {
+    const pts = strokes[o];
     for (let k = 2; k < pts.length; k += 2) {
-      addSegment(pts[k - 2], pts[k - 1], pts[k], pts[k + 1]);
+      addSegment(pts[k - 2], pts[k - 1], pts[k], pts[k + 1], o);
     }
   }
   segGridDirty = true;
@@ -316,8 +320,9 @@ function collide() {
   }
 }
 
-function collideLines() {
+function collideLines(h) {
   if (segCount === 0) return;
+  const moving = settings.strokeGravity;
 
   const minDist = segPad();
   const minSq = minDist * minDist;
@@ -379,7 +384,15 @@ function collideLines() {
         }
       }
 
-      const vx = px - prevX[i], vy = py - prevY[i];
+      // Work in the line's frame: a falling line's surface velocity (per
+      // substep) is subtracted, the bounce/friction applied, then added back.
+      const b = moving ? strokes[segStroke[s]] : null;
+      let lvx = 0, lvy = 0;
+      if (b && b.m) {
+        lvx = (b.vx - b.w * (hy - b.cy)) * h;
+        lvy = (b.vy + b.w * (hx - b.cx)) * h;
+      }
+      const vx = px - prevX[i] - lvx, vy = py - prevY[i] - lvy;
 
       px = hx + nx * minDist;
       py = hy + ny * minDist;
@@ -387,8 +400,12 @@ function collideLines() {
       const vn = vx * nx + vy * ny;
       const vtx = vx - vn * nx, vty = vy - vn * ny;
       const rn = vn < 0 ? -vn * bounce : vn;
-      prevX[i] = px - (vtx * fric + nx * rn);
-      prevY[i] = py - (vty * fric + ny * rn);
+      const nvx = vtx * fric + nx * rn, nvy = vty * fric + ny * rn;
+      prevX[i] = px - (nvx + lvx);
+      prevY[i] = py - (nvy + lvy);
+
+      // Equal and opposite: whatever the particle (mass 1) gained, the line loses.
+      if (b && b.m) hitBody(b, hx, hy, (vx - nvx) / h, (vy - nvy) / h);
     }
 
     posX[i] = px;
@@ -430,16 +447,122 @@ function constrainWalls() {
   }
 }
 
+// -------------------------------------------------------- falling strokes
+//
+// With strokeGravity on, each finished stroke is a rigid body: centroid
+// (cx, cy), velocity (vx, vy) in px/s, spin w in rad/s. The points in the
+// stroke array are moved in place, so drawing, erasing and the segment grid
+// keep treating strokes[] as the source of truth. Particles have mass 1; a
+// stroke weighs its area in particle areas.
+// ponytail: strokes don't collide with each other, add when gears need to mesh.
+const BODY_FRICTION = 0.5;   // stroke vs canvas edge
+
+function initBody(pts) {
+  const r = settings.radius;
+  const density = settings.lineThickness / (Math.PI * r * r);
+  let m = 0, cx = 0, cy = 0;
+  for (let k = 2; k < pts.length; k += 2) {
+    const len = Math.hypot(pts[k] - pts[k - 2], pts[k + 1] - pts[k - 1]) || 1e-3;
+    const sm = len * density;
+    m += sm;
+    cx += (pts[k] + pts[k - 2]) * 0.5 * sm;
+    cy += (pts[k + 1] + pts[k - 1]) * 0.5 * sm;
+  }
+  cx /= m; cy /= m;
+  let I = 0;
+  for (let k = 2; k < pts.length; k += 2) {
+    const len = Math.hypot(pts[k] - pts[k - 2], pts[k + 1] - pts[k - 1]) || 1e-3;
+    const mx = (pts[k] + pts[k - 2]) * 0.5 - cx, my = (pts[k + 1] + pts[k - 1]) * 0.5 - cy;
+    I += len * density * (mx * mx + my * my + len * len / 12);
+  }
+  pts.m = m; pts.I = I; pts.cx = cx; pts.cy = cy;
+  pts.vx = 0; pts.vy = 0; pts.w = 0;
+}
+
+// Impulse (jx, jy) in mass·px/s, applied at world point (x, y).
+function hitBody(b, x, y, jx, jy) {
+  b.vx += jx / b.m;
+  b.vy += jy / b.m;
+  b.w += ((x - b.cx) * jy - (y - b.cy) * jx) / b.I;
+}
+
+function moveStrokes(h) {
+  const g = settings.gravity * h;
+  const d = settings.damping;
+  for (let o = strokes.length - 1; o >= 0; o--) {
+    const pts = strokes[o];
+    if (pts === currentStroke || pts.length < 4) continue;
+    if (pts.m === undefined) initBody(pts);
+
+    pts.vy += g;
+    pts.vx *= d; pts.vy *= d; pts.w *= d;
+    const ncx = pts.cx + pts.vx * h, ncy = pts.cy + pts.vy * h;
+    const cos = Math.cos(pts.w * h), sin = Math.sin(pts.w * h);
+    for (let k = 0; k < pts.length; k += 2) {
+      const rx = pts[k] - pts.cx, ry = pts[k + 1] - pts.cy;
+      pts[k] = ncx + rx * cos - ry * sin;
+      pts[k + 1] = ncy + rx * sin + ry * cos;
+    }
+    pts.cx = ncx; pts.cy = ncy;
+
+    if (settings.walls) wallBody(pts);
+    else if (pts.cy > H + 2000 || pts.cy < -2000 || pts.cx < -2000 || pts.cx > W + 2000) strokes.splice(o, 1);
+  }
+  rebuildSegments();
+  buildSegGrid();
+}
+
+// Every point past an edge gets a bounce + friction impulse if it is still
+// moving into the edge, then the whole stroke is shifted back inside.
+function wallBody(b) {
+  const pad = settings.lineThickness * 0.5;
+  const e = settings.lineBounce;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let k = 0; k < b.length; k += 2) {
+    const x = b[k], y = b[k + 1];
+    let nx = 0, ny = 0;
+    if (x < pad) nx = 1; else if (x > W - pad) nx = -1;
+    else if (y < pad) ny = 1; else if (y > H - pad) ny = -1;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (nx === 0 && ny === 0) continue;
+
+    const rx = x - b.cx, ry = y - b.cy;
+    const pvx = b.vx - b.w * ry, pvy = b.vy + b.w * rx;
+    const vn = pvx * nx + pvy * ny;
+    if (vn >= 0) continue;
+    const rn = rx * ny - ry * nx;
+    const jn = -(1 + e) * vn / (1 / b.m + rn * rn / b.I);
+    const tx = -ny, ty = nx;
+    const rt = rx * ty - ry * tx;
+    let jt = -(pvx * tx + pvy * ty) / (1 / b.m + rt * rt / b.I);
+    const cap = jn * BODY_FRICTION;
+    if (jt > cap) jt = cap; else if (jt < -cap) jt = -cap;
+    hitBody(b, x, y, nx * jn + tx * jt, ny * jn + ty * jt);
+  }
+  let sx = 0, sy = 0;
+  if (minX < pad) sx = pad - minX; else if (maxX > W - pad) sx = W - pad - maxX;
+  if (minY < pad) sy = pad - minY; else if (maxY > H - pad) sy = H - pad - maxY;
+  if (sx || sy) {
+    for (let k = 0; k < b.length; k += 2) { b[k] += sx; b[k + 1] += sy; }
+    b.cx += sx; b.cy += sy;
+  }
+}
+
 function step(seconds) {
   if (segGridDirty) buildSegGrid();
 
   const h = seconds / settings.substeps;
+  // ponytail: segments + their grid are rebuilt every substep while lines
+  // fall; fine for a few hundred segments, move per-stroke if it gets slow.
+  const falling = settings.strokeGravity && strokes.length > 0;
   for (let s = 0; s < settings.substeps; s++) {
     integrate(h);
+    if (falling) moveStrokes(h);
     buildGrid();
     for (let p = 0; p < settings.passes; p++) {
       collide();
-      collideLines();
+      collideLines(h);
     }
     constrainWalls();
   }
@@ -585,7 +708,7 @@ function extendStroke(x, y) {
   const spacing = settings.drawSpacing;
   if (dx * dx + dy * dy < spacing * spacing) return;
   currentStroke.push(x, y);
-  addSegment(currentStroke[n - 2], currentStroke[n - 1], x, y);
+  addSegment(currentStroke[n - 2], currentStroke[n - 1], x, y, strokes.length - 1);
 }
 
 function eraseAt(x, y) {
@@ -969,6 +1092,7 @@ const CONTROLS = [
   { key: "damping", label: "Damping (air drag)", min: 0.9, max: 1, step: 0.001 },
   { key: "maxSpeed", label: "Speed limit (px/s)", min: 500, max: 10000, step: 100 },
   { key: "walls", label: "Canvas collisions", toggle: true },
+  { key: "strokeGravity", label: "Drawn lines fall", toggle: true },
 
   { group: "Solver" },
   { key: "substeps", label: "Substeps per frame", min: 1, max: 12, step: 1 },
