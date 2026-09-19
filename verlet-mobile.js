@@ -665,6 +665,8 @@ function step(seconds) {
     constrainWalls();
   }
   if (objects.length) applyRemovers();
+  // A held eraser is a circular remover that follows the pointer (and eats lines).
+  if (active.action === "erase") eraseAt(point.x, point.y);
 }
 
 // ------------------------------------------------------------------ input
@@ -813,6 +815,11 @@ function eraseAt(x, y) {
   const r = settings.eraserSize * 0.5;
   const rSq = r * r;
   let removed = false;
+
+  for (let i = count - 1; i >= 0; i--) {
+    const dx = posX[i] - x, dy = posY[i] - y;
+    if (dx * dx + dy * dy <= rSq) kill(i);
+  }
 
   for (let i = objects.length - 1; i >= 0; i--) {
     if (objectHit(objects[i], x, y, r)) {
