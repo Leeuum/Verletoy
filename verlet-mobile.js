@@ -1387,6 +1387,14 @@ for (const key in modeButtons) {
   });
 }
 
+// Paused = time stops (no physics, no emitters); drawing still renders.
+let paused = false;
+const pauseBtn = document.getElementById("pause");
+pauseBtn.addEventListener("click", () => {
+  paused = !paused;
+  pauseBtn.innerHTML = paused ? "&#9654;" : "&#9208;";
+});
+
 document.getElementById("clear").addEventListener("click", clearParticles);
 document.getElementById("clear-all").addEventListener("click", () => {
   clearParticles();
@@ -1447,7 +1455,7 @@ let frames = 0;
 let fpsClock = lastTime;
 
 function frame(now) {
-  const dt = Math.min(now - lastTime, MAX_CATCHUP);
+  const dt = paused ? 0 : Math.min(now - lastTime, MAX_CATCHUP);
   accumulator += dt;
   lastTime = now;
 
