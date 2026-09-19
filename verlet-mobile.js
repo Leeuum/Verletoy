@@ -1702,6 +1702,18 @@ panelBody.append(clearLinesButton);
 
 const STEP = 1000 / 60;
 const MAX_CATCHUP = 200;
+
+// Browsers round the rAF timestamp to whole milliseconds (privacy: it stops
+// pages timing the CPU precisely), so a 60Hz frame reports 16 or 17ms, never
+// 16.667. A 16 leaves the accumulator short, that frame steps nothing and the
+// next steps twice: judder at a solid 60 FPS. So a delta within 2ms of a whole
+// number of steps is snapped onto it — 16 and 17 both become one exact step.
+// Anything further off (a 120Hz display's 8ms, a real hitch) passes through to
+// the accumulator untouched.
+function snapDelta(ms) {
+  const n = Math.round(ms / STEP);
+  return n > 0 && Math.abs(ms - n * STEP) <= 2 ? n * STEP : ms;
+}
 let accumulator = 0;
 let lastTime = performance.now();
 
@@ -1709,7 +1721,7 @@ let frames = 0;
 let fpsClock = lastTime;
 
 function frame(now) {
-  const dt = paused ? 0 : Math.min(now - lastTime, MAX_CATCHUP);
+  const dt = paused ? 0 : Math.min(snapDelta(now - lastTime), MAX_CATCHUP);
   accumulator += dt;
   lastTime = now;
 
