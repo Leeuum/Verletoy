@@ -55,6 +55,7 @@ const settings = {
   lineFriction: 0.85,
   lineBounce: 0.1,
   drawSpacing: 4,
+  lineLock: false,   // Line tool: snap to horizontal/vertical/45°
   eraserSize: 44,
 };
 
@@ -877,6 +878,7 @@ function applyRemovers() {
 
 let mode = "emit";
 let currentStroke = null;
+let lineTool = false;     // double-tap Draw: straight lines instead of freehand
 let placeKind = "emit";   // which object the Place button drops
 let placing = null;       // the object being dragged out right now
 let placingIsNew = false; // false when the drag is re-shaping an existing one
@@ -950,6 +952,7 @@ function startStroke(x, y) {
 }
 
 function extendStroke(x, y) {
+  if (lineTool) return dragLine(x, y);
   const n = currentStroke.length;
   const dx = x - currentStroke[n - 2];
   const dy = y - currentStroke[n - 1];
@@ -957,6 +960,22 @@ function extendStroke(x, y) {
   if (dx * dx + dy * dy < spacing * spacing) return;
   currentStroke.push(x, y);
   addSegment(currentStroke[n - 2], currentStroke[n - 1], x, y, strokes.length - 1);
+}
+
+// Line tool: the stroke is always just [start, end], the end following the
+// pointer. With lineLock the direction snaps to the nearest 45°.
+function dragLine(x, y) {
+  const x0 = currentStroke[0], y0 = currentStroke[1];
+  if (settings.lineLock) {
+    const a = Math.round(Math.atan2(y - y0, x - x0) / (Math.PI / 4)) * (Math.PI / 4);
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const d = (x - x0) * cos + (y - y0) * sin;
+    x = x0 + d * cos;
+    y = y0 + d * sin;
+  }
+  currentStroke.length = 2;
+  currentStroke.push(x, y);
+  rebuildSegments();
 }
 
 function eraseAt(x, y) {
@@ -1421,6 +1440,7 @@ function updateModeButtons() {
   for (const key in modeButtons) {
     modeButtons[key].classList.toggle("active", key === mode);
   }
+  modeButtons.draw.textContent = lineTool ? "Line" : "Draw";
   modeButtons.place.textContent =
     { emit: "Place: Emitter", kill: "Place: Remover", anchor: "Place: Anchor" }[placeKind];
 }
@@ -1507,6 +1527,7 @@ const TOOL_PANELS = {
     { key: "lineFriction", label: "Friction", min: 0, max: 1, step: 0.01 },
     { key: "lineBounce", label: "Bounciness", min: 0, max: 1, step: 0.01 },
     { key: "drawSpacing", label: "Detail", min: 2, max: 30, step: 1 },
+    { key: "lineLock", label: "Locked direction", toggle: true },
   ],
   erase: [
     { key: "eraserSize", label: "Eraser size (px)", min: 8, max: 160, step: 2 },
@@ -1522,6 +1543,17 @@ for (const key in TOOL_PANELS) {
   el.hidden = true;
 
   for (const c of TOOL_PANELS[key]) {
+    if (c.toggle) {
+      const row = document.createElement("label");
+      row.className = "row toggle";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = settings[c.key];
+      box.addEventListener("input", () => { settings[c.key] = box.checked; });
+      row.append(box, c.label);
+      el.append(row);
+      continue;
+    }
     const range = sliderRow(el, { ...c, set: (v) => setSetting(c.key, v) });
     range.value = settings[c.key];
     (inputsByKey[c.key] ||= []).push(range);
@@ -1553,9 +1585,17 @@ function toggleTool(key) {
   el.style.top = Math.min(top, innerHeight - h - 4) + "px";
 }
 
+// Double-tap Draw flips it between freehand and the straight Line tool.
+// Timed by hand rather than dblclick, which iOS doesn't fire on buttons.
+let lastDrawTap = 0;
+
 for (const key in modeButtons) {
   modeButtons[key].addEventListener("click", () => {
     if (openTool !== toolPanels[key]) closeTool();
+    if (key === "draw" && mode === "draw" && performance.now() - lastDrawTap < 350) {
+      lineTool = !lineTool;
+      lastDrawTap = 0;
+    } else if (key === "draw") lastDrawTap = performance.now();
     setMode(key);
   });
 }
