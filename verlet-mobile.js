@@ -152,6 +152,74 @@ const EMIT_DEF = { interval: 105, burst: 1, spread: 0, speed: 1200 };
 
 const EMIT_R = 26;        // emitter circle radius, also the aim-drag full-throw
 const KILL_MIN = 14;      // smallest half-extent a drag can leave behind, per axis
+const ANCHOR_R = 7;       // anchor dot radius
+const ANCHOR_SNAP = 60;   // how far from a line the cursor can be and still find it
+
+// Anchor: {kind:"anchor", x, y, body, k, u}. (x, y) is the fixed world pin;
+// the pinned spot on the body is u of the way along its segment k-2 → k.
+// Stored as a point *on the stroke* rather than an offset from the centroid,
+// so it rides along as the body's points are moved in place and survives
+// initBody recomputing the centre of mass.
+function anchorPoint(a) {
+  const p = a.body, k = a.k;
+  return [p[k - 2] + (p[k] - p[k - 2]) * a.u, p[k - 1] + (p[k + 1] - p[k - 1]) * a.u];
+}
+
+// Nearest spot on any finished line within ANCHOR_SNAP of (x, y), or null.
+function lineSpotAt(x, y) {
+  let best = ANCHOR_SNAP * ANCHOR_SNAP, hit = null;
+  for (const pts of strokes) {
+    if (pts === currentStroke) continue;
+    for (let k = 2; k < pts.length; k += 2) {
+      if (isGap(pts, k)) continue;
+      const ax = pts[k - 2], ay = pts[k - 1], ex = pts[k] - ax, ey = pts[k + 1] - ay;
+      const lenSq = ex * ex + ey * ey;
+      let u = lenSq > 0 ? ((x - ax) * ex + (y - ay) * ey) / lenSq : 0;
+      if (u < 0) u = 0; else if (u > 1) u = 1;
+      const px = ax + ex * u, py = ay + ey * u;
+      const dSq = (x - px) * (x - px) + (y - py) * (y - py);
+      if (dSq < best) { best = dSq; hit = { x: px, y: py, body: pts, k, u }; }
+    }
+  }
+  return hit;
+}
+
+// Anchors whose line was erased or fell off-screen go with it.
+function pruneAnchors() {
+  for (let i = objects.length - 1; i >= 0; i--) {
+    if (objects[i].kind === "anchor" && !strokes.includes(objects[i].body)) objects.splice(i, 1);
+  }
+}
+
+// Pin constraint: an impulse at the anchor that cancels the body's velocity
+// there (plus a nudge back towards the pin), so the body can only spin about
+// it. Mass and centre of mass are untouched, which is what makes a stick
+// with a blob on the end swing like a pendulum. Iterated so two anchors on
+// one body settle together.
+function solveAnchors(h) {
+  for (let it = 0; it < 4; it++) {
+    for (const a of objects) {
+      const b = a.body;
+      if (a.kind !== "anchor" || !b.m) continue;
+      const [px, py] = anchorPoint(a);
+      const rx = px - b.cx, ry = py - b.cy;
+      const vx = b.vx - b.w * ry - (a.x - px) * 0.2 / h;
+      const vy = b.vy + b.w * rx - (a.y - py) * 0.2 / h;
+      const k11 = 1 / b.m + ry * ry / b.I, k22 = 1 / b.m + rx * rx / b.I, k12 = -rx * ry / b.I;
+      const det = k11 * k22 - k12 * k12;
+      hitBody(b, px, py, -(k22 * vx - k12 * vy) / det, -(k11 * vy - k12 * vx) / det);
+    }
+  }
+}
+
+// After the step, put each pinned spot exactly back on its pin.
+function snapAnchors() {
+  for (const a of objects) {
+    if (a.kind !== "anchor" || !a.body.m) continue;
+    const [px, py] = anchorPoint(a);
+    shiftBody(a.body, a.x - px, a.y - py);
+  }
+}
 
 // ---------------------------------------------------------------- strokes
 
@@ -515,6 +583,11 @@ function moveStrokes(h) {
 
     pts.vy += g;
     pts.vx *= d; pts.vy *= d; pts.w *= spin;
+  }
+  solveAnchors(h);
+  for (let o = strokes.length - 1; o >= 0; o--) {
+    const pts = strokes[o];
+    if (pts === currentStroke || pts.length < 4) continue;
     const ncx = pts.cx + pts.vx * h, ncy = pts.cy + pts.vy * h;
     const cos = Math.cos(pts.w * h), sin = Math.sin(pts.w * h);
     for (let k = 0; k < pts.length; k += 2) {
@@ -526,12 +599,14 @@ function moveStrokes(h) {
 
     if (!settings.walls && (pts.cy > H + 2000 || pts.cy < -2000 || pts.cx < -2000 || pts.cx > W + 2000)) {
       strokes.splice(o, 1);
+      pruneAnchors();
     }
   }
   if (settings.strokeCollide) collideStrokes();
   if (settings.walls) {
     for (const pts of strokes) if (pts.m) wallBody(pts);
   }
+  snapAnchors();
   rebuildSegments();
   buildSegGrid();
 }
@@ -547,7 +622,10 @@ function mergeCrossing() {
     const hits = strokes.filter((A) => A !== F && A !== currentStroke && A.length >= 4 && overlaps(A, F));
     if (hits.length === 0) continue;
 
-    for (const A of hits) F.push(NaN, NaN, ...A);
+    for (const A of hits) {
+      for (const a of objects) if (a.body === A) { a.body = F; a.k += F.length + 2; }
+      F.push(NaN, NaN, ...A);
+    }
     initBody(F);
     let px = 0, py = 0, L = 0;
     for (const A of hits) {
@@ -806,7 +884,7 @@ let placingIsNew = false; // false when the drag is re-shaping an existing one
 function setMode(next) {
   // Tapping Place while already in it flips between emitter and remover.
   if (next === "place" && mode === "place") {
-    placeKind = placeKind === "emit" ? "kill" : "emit";
+    placeKind = { emit: "kill", kill: "anchor", anchor: "emit" }[placeKind];
   }
   mode = next;
   closeMini();
@@ -820,6 +898,7 @@ function setMode(next) {
 // for a remover it is the rectangle's half-width and half-height, sized
 // independently so the box can be any aspect.
 function startPlace(x, y) {
+  if (placeKind === "anchor") return;  // anchors drop on release, see endPointer
   // Press on an object already there and the drag re-shapes that one (re-aim
   // an emitter, resize a remover) instead of dropping a new one on top.
   for (let i = objects.length - 1; i >= 0; i--) {
@@ -852,8 +931,8 @@ function dragPlace(x, y) {
 }
 
 function objectHit(o, x, y, pad) {
-  const rx = (o.kind === "emit" ? EMIT_R : o.hw) + pad;
-  const ry = (o.kind === "emit" ? EMIT_R : o.hh) + pad;
+  const rx = (o.kind === "emit" ? EMIT_R : o.kind === "anchor" ? ANCHOR_R : o.hw) + pad;
+  const ry = (o.kind === "emit" ? EMIT_R : o.kind === "anchor" ? ANCHOR_R : o.hh) + pad;
   return Math.abs(x - o.x) <= rx && Math.abs(y - o.y) <= ry;
 }
 
@@ -909,7 +988,7 @@ function eraseAt(x, y) {
     }
   }
 
-  if (removed) rebuildSegments();
+  if (removed) { rebuildSegments(); pruneAnchors(); }
 }
 
 // ------------------------------------------------------- pointer plumbing
@@ -999,6 +1078,7 @@ canvas.addEventListener("pointerdown", (e) => {
 
 canvas.addEventListener("pointermove", (e) => {
   if (e.pointerType === "pen") lastPenAt = performance.now();
+  if (active.id === null) trackPointer(e);  // hover: mouse / hovering pen
   if (e.pointerId !== active.id) return;
 
   e.preventDefault();
@@ -1026,6 +1106,10 @@ function stopInput() {
 
 function endPointer(e) {
   if (e.pointerId !== active.id) return;
+  if (active.action === "place" && placeKind === "anchor") {
+    const spot = lineSpotAt(point.x, point.y);
+    if (spot) objects.push({ kind: "anchor", ...spot });
+  }
   if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
   stopInput();
 }
@@ -1066,6 +1150,7 @@ const COL = (() => {
     eraser:   g("--eraser"),
     emitter:  g("--emitter"),
     remover:  g("--remover"),
+    anchor:   g("--anchor") || "#2f6bff",
   };
 })();
 
@@ -1129,6 +1214,13 @@ function drawObjects() {
       ctx.strokeRect(o.x - o.hw, o.y - o.hh, o.hw * 2, o.hh * 2);
       continue;
     }
+    if (o.kind === "anchor") {
+      ctx.fillStyle = COL.anchor;
+      ctx.beginPath();
+      ctx.arc(o.x, o.y, ANCHOR_R, 0, Math.PI * 2);
+      ctx.fill();
+      continue;
+    }
     ctx.strokeStyle = COL.emitter;
     ctx.fillStyle = COL.emitter;
     ctx.lineWidth = 2;
@@ -1148,6 +1240,18 @@ function drawObjects() {
 
 // In erase mode the brush is invisible on a touchscreen — there is no cursor
 // — so the last known point gets a ring the size of the eraser.
+// Anchor tool: a ghost node on the nearest line, following the cursor.
+function drawAnchorPreview() {
+  if (mode !== "place" || placeKind !== "anchor" || (active.action && active.action !== "place")) return;
+  const spot = lineSpotAt(point.x, point.y);
+  if (!spot) return;
+  ctx.strokeStyle = COL.anchor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(spot.x, spot.y, ANCHOR_R, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
 function drawEraserRing() {
   if (mode !== "erase" && active.action !== "erase") return;
   ctx.strokeStyle = COL.eraser;
@@ -1165,6 +1269,7 @@ function draw() {
   for (let i = 0; i < count; i++) {
     ctx.drawImage(sprite, posX[i] - spriteHalf, posY[i] - spriteHalf, spriteSize, spriteSize);
   }
+  drawAnchorPreview();
   drawEraserRing();
 }
 
@@ -1317,7 +1422,7 @@ function updateModeButtons() {
     modeButtons[key].classList.toggle("active", key === mode);
   }
   modeButtons.place.textContent =
-    placeKind === "emit" ? "Place: Emitter" : "Place: Remover";
+    { emit: "Place: Emitter", kill: "Place: Remover", anchor: "Place: Anchor" }[placeKind];
 }
 
 // Every input bound to a key, so a change from one panel shows in the others.
