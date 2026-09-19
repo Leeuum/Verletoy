@@ -20,7 +20,6 @@
       --font: Menlo, Consolas, monospace;
       --font-size: 14px;
       --text: #ffffff;
-      --muted: #ffffff;
       --accent: #e01b24;
       --page-bg: #000000;
       --canvas-bg: #000000;
@@ -57,7 +56,6 @@
       --label: #aaaaaa;
       --group-size: 11px;
       --group-track: #2c2c2c;
-      --hint: #777777;
       --track-h: 1px;
       --track-bg: #3a3a3a;
       --thumb: 15px;
@@ -69,9 +67,7 @@
       --stats-size: 12px;
       --stats-col: #c0bfbc;
       --particle: #ffffff;
-      --particle-r: 4px;
       --stroke-col: #AC0000;
-      --stroke-w: 6px;
       --eraser: #ff6666;
       --emitter: #2ec27e;
       --remover: #a51d2d;
@@ -181,19 +177,7 @@
     /* Narrow phones: the bar wraps, so tighten the buttons and turn the
        divider into the line break — modes on top, actions underneath. */
     @media (max-width: 460px) {
-      #bar #grip {
-      flex: 0 0 auto;
-      align-self: stretch;
-      min-width: calc(var(--btn-h) * var(--scale) * 0.45);
-      border-radius: calc(var(--btn-radius) * var(--scale));
-      background:
-        radial-gradient(circle, var(--btn-border) 40%, transparent 42%) 0 0 / 100% 33.33%;
-      cursor: grab;
-      touch-action: none;
-    }
-    #bar #grip:active { cursor: grabbing; }
-
-    #bar .sep {
+      #bar .sep {
         width: 100%;
         height: 0;
         margin: 0;
@@ -251,13 +235,13 @@
     }
 
     /* Emitter menu is green throughout — label, steppers, track and knob.
-       Kept on the #mini id because the .row slider rules below would
-       otherwise win on source order and repaint it panel-red. */
+       One rule per browser prefix: a selector list mixing -webkit- and -moz-
+       is dropped whole by every browser. The #mini id outranks the .row rules. */
     #mini .lab,
     #mini .lab button { color: var(--emitter); }
     #mini input[type=range]::-webkit-slider-runnable-track,
+    #mini input[type=range]::-webkit-slider-thumb { background: var(--emitter); }
     #mini input[type=range]::-moz-range-track,
-    #mini input[type=range]::-webkit-slider-thumb,
     #mini input[type=range]::-moz-range-thumb { background: var(--emitter); }
 
     /* Toolbar panels wear the side panel's colours instead of the emitter's,

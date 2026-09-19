@@ -325,12 +325,7 @@ function collideLines() {
   const bounce = settings.lineBounce;
 
   for (let i = 0; i < count; i++) {
-    let cx = (posX[i] / cellSize) | 0;
-    let cy = (posY[i] / cellSize) | 0;
-    if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
-    if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
-
-    const c = cy * cols + cx;
+    const c = cellOf(i);
     const start = segCellStart[c], end = segCellStart[c + 1];
     if (start === end) continue;
 
@@ -409,15 +404,11 @@ function constrainWalls() {
 
   // Edges off: the viewport border acts like a remover. Particles are only
   // dropped once fully outside, so they fly off screen instead of popping at
-  // the rim. Same swap-delete as applyRemovers().
+  // the rim.
   if (!settings.walls) {
     for (let i = count - 1; i >= 0; i--) {
-      if (posX[i] > -r && posX[i] < W + r && posY[i] > -r && posY[i] < H + r) continue;
-      const last = --count;
-      posX[i] = posX[last]; posY[i] = posY[last];
-      prevX[i] = prevX[last]; prevY[i] = prevY[last];
+      if (posX[i] <= -r || posX[i] >= W + r || posY[i] <= -r || posY[i] >= H + r) kill(i);
     }
-    if (recycle > count) recycle = 0;
     return;
   }
 
@@ -490,19 +481,28 @@ function spawn(x, y, vx = 0, vy = 0, spread = settings.spread) {
   prevY[i] = posY[i] - vy * h;
 }
 
-// Removers, applied once per fixed step: swap the dead particle with the last
-// live one and shrink `count`. Order is meaningless here, so the swap is free.
+// Delete particle i: swap the last live one into its slot and shrink `count`.
+// Order is meaningless here, so the swap is free. Callers loop backwards.
+function kill(i) {
+  const last = --count;
+  posX[i] = posX[last]; posY[i] = posY[last];
+  prevX[i] = prevX[last]; prevY[i] = prevY[last];
+  if (recycle > count) recycle = 0;
+}
+
+function clearParticles() {
+  count = 0;
+  recycle = 0;
+}
+
+// Removers, applied once per fixed step.
 function applyRemovers() {
   for (const o of objects) {
     if (o.kind !== "kill") continue;
     for (let i = count - 1; i >= 0; i--) {
-      if (Math.abs(posX[i] - o.x) > o.hw || Math.abs(posY[i] - o.y) > o.hh) continue;
-      const last = --count;
-      posX[i] = posX[last]; posY[i] = posY[last];
-      prevX[i] = prevX[last]; prevY[i] = prevY[last];
+      if (Math.abs(posX[i] - o.x) <= o.hw && Math.abs(posY[i] - o.y) <= o.hh) kill(i);
     }
   }
-  if (recycle > count) recycle = 0;
 }
 
 let mode = "emit";
@@ -761,14 +761,14 @@ window.addEventListener("keydown", (e) => {
 // meant to change at runtime.
 const COL = (() => {
   const cs = getComputedStyle(document.documentElement);
-  const g = (k, fallback) => cs.getPropertyValue(k).trim() || fallback;
+  const g = (k) => cs.getPropertyValue(k).trim();
   return {
-    canvas:   g("--canvas-bg", "#1c1c1c"),
-    particle: g("--particle", "#ffffff"),
-    stroke:   g("--stroke-col", "#8899aa"),
-    eraser:   g("--eraser", "#ff6666"),
-    emitter:  g("--emitter", "#66ff99"),
-    remover:  g("--remover", "#ff6e6e"),
+    canvas:   g("--canvas-bg"),
+    particle: g("--particle"),
+    stroke:   g("--stroke-col"),
+    eraser:   g("--eraser"),
+    emitter:  g("--emitter"),
+    remover:  g("--remover"),
   };
 })();
 
@@ -1011,11 +1011,6 @@ function updateModeButtons() {
     placeKind === "emit" ? "Place: Emitter" : "Place: Remover";
 }
 
-function decimalsFor(step) {
-  const s = String(step);
-  return s.includes(".") ? s.split(".")[1].length : 0;
-}
-
 // Every input bound to a key, so a change from one panel shows in the others.
 const inputsByKey = {};
 
@@ -1066,7 +1061,7 @@ for (const control of CONTROLS) {
     el.min = control.min;
     el.max = control.max;
     el.step = control.step;
-    el.value = settings[control.key].toFixed(decimalsFor(control.step));
+    el.value = settings[control.key];
     el.addEventListener("input", () => {
       const value = Number(el.value);
       if (!Number.isFinite(value)) return;
@@ -1162,13 +1157,9 @@ for (const key in modeButtons) {
   });
 }
 
-document.getElementById("clear").addEventListener("click", () => {
-  count = 0;
-  recycle = 0;
-});
+document.getElementById("clear").addEventListener("click", clearParticles);
 document.getElementById("clear-all").addEventListener("click", () => {
-  count = 0;
-  recycle = 0;
+  clearParticles();
   strokes.length = 0;
   objects.length = 0;
   closeMini();
@@ -1206,12 +1197,6 @@ document.getElementById("grip").addEventListener("pointerdown", (e) => {
   e.target.addEventListener("pointercancel", up);
 });
 
-const resetButton = document.createElement("button");
-resetButton.className = "wide";
-resetButton.textContent = "Reset — clear all particles";
-resetButton.addEventListener("click", () => { count = 0; recycle = 0; });
-panelBody.append(resetButton);
-
 const clearLinesButton = document.createElement("button");
 clearLinesButton.className = "wide";
 clearLinesButton.textContent = "Clear all drawn lines";
@@ -1245,14 +1230,12 @@ function frame(now) {
   }
 
   // Each placed emitter runs its own clock at its own rate.
-  if (objects.length) {
-    for (const o of objects) {
-      if (o.kind !== "emit") continue;
-      o.t += dt;
-      while (o.t >= o.interval) {
-        for (let n = 0; n < o.burst; n++) spawn(o.x, o.y, o.vx, o.vy, o.spread);
-        o.t -= o.interval;
-      }
+  for (const o of objects) {
+    if (o.kind !== "emit") continue;
+    o.t += dt;
+    while (o.t >= o.interval) {
+      for (let n = 0; n < o.burst; n++) spawn(o.x, o.y, o.vx, o.vy, o.spread);
+      o.t -= o.interval;
     }
   }
 
@@ -1282,7 +1265,6 @@ function scheduleResize() {
   resizePending = setTimeout(resizeCanvas, 120);
 }
 window.addEventListener("resize", scheduleResize);
-window.addEventListener("orientationchange", scheduleResize);
 if (window.visualViewport) window.visualViewport.addEventListener("resize", scheduleResize);
 
 // A backgrounded tab stops rAF; without this the first frame back would try
