@@ -409,9 +409,8 @@ function constrainWalls() {
 
   // Edges off: the viewport border acts like a remover. Particles are only
   // dropped once fully outside, so they fly off screen instead of popping at
-  // the rim. Same swap-delete as applyRemovers(). Skipped during a benchmark,
-  // which owns `count` itself.
-  if (!settings.walls && !bench.on) {
+  // the rim. Same swap-delete as applyRemovers().
+  if (!settings.walls) {
     for (let i = count - 1; i >= 0; i--) {
       if (posX[i] > -r && posX[i] < W + r && posY[i] > -r && posY[i] < H + r) continue;
       const last = --count;
@@ -453,7 +452,7 @@ function step(seconds) {
     }
     constrainWalls();
   }
-  if (objects.length && !bench.on) applyRemovers();
+  if (objects.length) applyRemovers();
 }
 
 // ------------------------------------------------------------------ input
@@ -670,7 +669,6 @@ function abortAction() {
 }
 
 canvas.addEventListener("pointerdown", (e) => {
-  if (bench.on) return;
   if (e.pointerType === "pen") lastPenAt = performance.now();
 
   if (active.id !== null) {
@@ -1018,8 +1016,7 @@ function decimalsFor(step) {
   return s.includes(".") ? s.split(".")[1].length : 0;
 }
 
-// Slider + number pair per key, so the benchmark can write a value back into
-// the panel instead of silently changing a setting the UI still shows stale.
+// Every input bound to a key, so a change from one panel shows in the others.
 const inputsByKey = {};
 
 function setSetting(key, value) {
@@ -1224,233 +1221,6 @@ clearLinesButton.addEventListener("click", () => {
 });
 panelBody.append(clearLinesButton);
 
-// -------------------------------------------------------------- benchmark
-//
-// Answers one question: how many particles does this machine carry at 60fps,
-// at whatever solver quality is currently set.
-//
-// It does not read the fps counter. rAF is vsync-locked, so fps is quantised
-// into 60/30/20 steps — a cliff, not a gradient, and useless to search on.
-// What gets timed instead is the wall-clock cost of one 60Hz frame's work:
-// median step() plus median draw(). Those are separate numbers on purpose;
-// at high counts the per-particle drawImage can outweigh the physics, and
-// the fix differs (radius/count vs substeps/passes).
-//
-// The target is BENCH_BUDGET of the 16.7ms frame, not all of it. A cap tuned
-// to sit exactly on the edge falls over the moment the browser does anything
-// else. The test scene is a solid packed pile because that is the expensive
-// case — loose particles in open space have almost no neighbours to check,
-// and a cap tuned on a spray collapses the first time everything lands in
-// a heap.
-//
-// Solver settings are deliberately not searched. Substeps and passes trade
-// look for speed, and a script maximising particle count would always drive
-// them to 1 and hand back mush. You pick the quality; this finds the count.
-
-const BENCH_BUDGET = 12;      // ms of the 16.7ms frame allowed for physics + draw
-const BENCH_SETTLE = 400;     // ms of settling before timing starts
-const BENCH_MEASURE = 900;    // ms of timed samples per particle count
-const BENCH_TRIES = 6;
-const BENCH_LABEL = "Benchmark this machine";
-const BENCH_KEY = "verlet-bench";
-
-const bench = {
-  on: false,
-  phase: "",
-  since: 0,
-  n: 0,
-  tried: [],
-  steps: [],
-  draws: [],
-  capBefore: 0,
-};
-
-function median(values) {
-  if (!values.length) return 0;
-  const sorted = Float64Array.from(values).sort();
-  return sorted[sorted.length >> 1];
-}
-
-// Packing solid past this would stack particles off the top of the screen and
-// into the wall clamp, which is not a scene anyone will ever make.
-function benchCapacity() {
-  const d = settings.radius * 2;
-  const cols = Math.max(1, Math.floor(W / d));
-  const rows = Math.max(1, Math.floor(H / (d * 0.9)));
-  return Math.min(MAX_PARTICLES, cols * rows);
-}
-
-// Rows at 0.9 diameter and every other row offset: already compacted and
-// already overlapping, so the worst case is reached without waiting for a
-// tall column of particles to fall and settle.
-function benchFill(n) {
-  const d = settings.radius * 2;
-  const cols = Math.max(1, Math.floor(W / d));
-  count = Math.min(n, benchCapacity());
-  recycle = 0;
-  for (let i = 0; i < count; i++) {
-    const row = (i / cols) | 0;
-    posX[i] = settings.radius + (i % cols) * d + (row & 1 ? d * 0.5 : 0);
-    posY[i] = H - settings.radius - row * d * 0.9;
-    prevX[i] = posX[i];
-    prevY[i] = posY[i];
-  }
-}
-
-// Cost is very close to linear in particle count, so the next guess is the
-// line through the last two samples solved for the budget (a straight
-// proportion on the first). That lands within a few percent in about four
-// measurements instead of forty blind ramp steps.
-function benchNext(ms) {
-  const tried = bench.tried;
-  if (tried.length >= BENCH_TRIES) return null;
-  if (Math.abs(ms - BENCH_BUDGET) / BENCH_BUDGET < 0.06) return null;
-
-  const b = tried[tried.length - 1];
-  const a = tried[tried.length - 2];
-  const slope = a && b.n !== a.n ? (b.ms - a.ms) / (b.n - a.n) : 0;
-
-  let guess = slope > 0
-    ? b.n + (BENCH_BUDGET - b.ms) / slope
-    : bench.n * (BENCH_BUDGET / Math.max(ms, 0.01));
-
-  // A single step never moves more than 4x either way — a wild extrapolation
-  // off one noisy sample could otherwise hang the tab for seconds.
-  guess = Math.min(Math.max(guess, bench.n * 0.25), bench.n * 4);
-  guess = Math.min(Math.max(Math.round(guess / 100) * 100, 100), benchCapacity());
-  return tried.some((r) => r.n === guess) ? null : guess;
-}
-
-function benchMeasure(n) {
-  bench.n = Math.min(Math.max(Math.round(n / 100) * 100, 100), benchCapacity());
-  benchFill(bench.n);
-  bench.phase = "settle";
-  bench.since = performance.now();
-  benchStatus.textContent =
-    `Testing ${bench.n} particles… (${bench.tried.length + 1}/${BENCH_TRIES})`;
-}
-
-function benchTick(now) {
-  const wait = bench.phase === "settle" ? BENCH_SETTLE : BENCH_MEASURE;
-  if (now - bench.since < wait) return;
-
-  if (bench.phase === "settle") {
-    bench.phase = "measure";
-    bench.since = now;
-    bench.steps.length = 0;
-    bench.draws.length = 0;
-    return;
-  }
-
-  // On a machine slow enough that 900ms holds only a handful of frames, keep
-  // going until there are enough samples for the median to mean anything.
-  if (bench.steps.length < 8) return;
-
-  const ms = median(bench.steps) + median(bench.draws);
-  bench.tried.push({ n: bench.n, ms });
-
-  const next = benchNext(ms);
-  if (next === null) benchFinish();
-  else benchMeasure(next);
-}
-
-function benchStart() {
-  stopInput();
-  bench.on = true;
-  bench.tried.length = 0;
-  bench.capBefore = settings.maxParticles;
-  settings.maxParticles = MAX_PARTICLES;  // the bench drives count directly
-  benchButton.textContent = "Stop benchmark";
-  benchApply.style.display = "none";
-  benchMeasure(Math.min(2000, benchCapacity()));
-}
-
-function benchStop(message) {
-  bench.on = false;
-  bench.phase = "";
-  bench.tried.length = 0;
-  settings.maxParticles = bench.capBefore;
-  benchButton.textContent = BENCH_LABEL;
-  onSettingChanged();  // trims count back under the restored cap
-  if (message) benchStatus.textContent = message;
-}
-
-function benchFinish() {
-  const under = bench.tried.filter((r) => r.ms <= BENCH_BUDGET);
-  const best = under.length ? under.reduce((m, r) => (r.n > m.n ? r : m)) : null;
-  const points = bench.tried.map((r) => `${r.n}:${r.ms.toFixed(1)}ms`).join("  ");
-
-  benchStop();
-
-  if (!best) {
-    benchStatus.textContent =
-      `Nothing fits the ${BENCH_BUDGET}ms budget at this quality — ` +
-      `lower substeps or passes.\n${points}`;
-    return;
-  }
-
-  benchResult = {
-    n: best.n,
-    ms: Math.round(best.ms * 10) / 10,
-    substeps: settings.substeps,
-    passes: settings.passes,
-    radius: settings.radius,
-    points,
-  };
-  try {
-    localStorage.setItem(BENCH_KEY, JSON.stringify(benchResult));
-  } catch (e) {
-    // Private browsing refuses localStorage; the result on screen is enough.
-  }
-  showBenchResult();
-}
-
-function showBenchResult(prefix) {
-  const r = benchResult;
-  benchStatus.textContent =
-    `${prefix || ""}${r.n} particles at ${r.ms}ms of the ${BENCH_BUDGET}ms budget — ` +
-    `${r.substeps} substeps, ${r.passes} passes, radius ${r.radius}.` +
-    (r.points ? `\n${r.points}` : "");
-  benchApply.style.display = "block";
-}
-
-const benchHeading = document.createElement("div");
-benchHeading.className = "group";
-benchHeading.textContent = "Benchmark";
-
-const benchButton = document.createElement("button");
-benchButton.className = "wide";
-benchButton.textContent = BENCH_LABEL;
-benchButton.addEventListener("click", () => {
-  if (bench.on) benchStop("Cancelled.");
-  else benchStart();
-});
-
-const benchApply = document.createElement("button");
-benchApply.className = "wide";
-benchApply.textContent = "Apply to max particles";
-benchApply.style.display = "none";
-benchApply.addEventListener("click", () => {
-  if (benchResult) setSetting("maxParticles", benchResult.n);
-});
-
-const benchStatus = document.createElement("div");
-benchStatus.className = "hint";
-benchStatus.style.whiteSpace = "pre-line";
-benchStatus.textContent =
-  "Clears the scene, packs it solid and times the frame. Takes about 10 seconds.";
-
-panelBody.append(benchHeading, benchButton, benchApply, benchStatus);
-
-let benchResult = null;
-try {
-  benchResult = JSON.parse(localStorage.getItem(BENCH_KEY));
-} catch (e) {
-  benchResult = null;
-}
-if (benchResult) showBenchResult("Last run: ");
-
-
 // -------------------------------------------------------------- main loop
 
 const STEP = 1000 / 60;
@@ -1475,8 +1245,7 @@ function frame(now) {
   }
 
   // Each placed emitter runs its own clock at its own rate.
-  // Skipped during a benchmark run, which owns `count` itself.
-  if (objects.length && !bench.on) {
+  if (objects.length) {
     for (const o of objects) {
       if (o.kind !== "emit") continue;
       o.t += dt;
@@ -1488,18 +1257,11 @@ function frame(now) {
   }
 
   while (accumulator >= STEP) {
-    const t = bench.on ? performance.now() : 0;
     step(STEP / 1000);
-    if (bench.on) bench.steps.push(performance.now() - t);
     accumulator -= STEP;
   }
 
-  const drawStart = bench.on ? performance.now() : 0;
   draw();
-  if (bench.on) {
-    bench.draws.push(performance.now() - drawStart);
-    benchTick(now);
-  }
 
   frames++;
   if (now - fpsClock >= 1000) {
@@ -1527,9 +1289,6 @@ if (window.visualViewport) window.visualViewport.addEventListener("resize", sche
 // to catch up on minutes of accumulated time (MAX_CATCHUP softens it, but
 // resetting the clock is cleaner).
 document.addEventListener("visibilitychange", () => {
-  // A backgrounded tab makes every timing meaningless, so a run in progress
-  // is thrown away rather than reported as a result.
-  if (document.hidden && bench.on) benchStop("Cancelled — tab lost focus.");
   if (!document.hidden) {
     lastTime = performance.now();
     accumulator = 0;
