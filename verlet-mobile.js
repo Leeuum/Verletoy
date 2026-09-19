@@ -1390,6 +1390,7 @@ for (const key in modeButtons) {
     }
     lastModeTap = key;
     lastModeTapAt = now;
+    if (openTool !== toolPanels[key]) closeTool();
     setMode(key);
   });
 }
