@@ -56,6 +56,7 @@ const settings = {
   lineBounce: 0.1,
   drawSpacing: 4,
   lineLock: false,   // Line tool: snap to horizontal/vertical/45°
+  circleLock: true,  // Circle tool: perfect circle, else an ellipse
   eraserSize: 44,
 };
 
@@ -878,7 +879,7 @@ function applyRemovers() {
 
 let mode = "emit";
 let currentStroke = null;
-let lineTool = false;     // double-tap Draw: straight lines instead of freehand
+let drawKind = "free";    // double-tap Draw cycles free → line → circle
 let placeKind = "emit";   // which object the Place button drops
 let placing = null;       // the object being dragged out right now
 let placingIsNew = false; // false when the drag is re-shaping an existing one
@@ -952,7 +953,8 @@ function startStroke(x, y) {
 }
 
 function extendStroke(x, y) {
-  if (lineTool) return dragLine(x, y);
+  if (drawKind === "line") return dragLine(x, y);
+  if (drawKind === "circle") return dragCircle(x, y);
   const n = currentStroke.length;
   const dx = x - currentStroke[n - 2];
   const dy = y - currentStroke[n - 1];
@@ -975,6 +977,24 @@ function dragLine(x, y) {
   }
   currentStroke.length = 2;
   currentStroke.push(x, y);
+  rebuildSegments();
+}
+
+// Circle tool: press is the centre, the drag sets the radii like the remover
+// box's half-sizes. The stroke is a closed ring, one point per drawSpacing.
+// The centre is stashed on the stroke so each move redraws from it.
+function dragCircle(x, y) {
+  const c = currentStroke;
+  if (c.ox === undefined) { c.ox = c[0]; c.oy = c[1]; }
+  let rx = Math.abs(x - c.ox), ry = Math.abs(y - c.oy);
+  if (settings.circleLock) rx = ry = Math.hypot(x - c.ox, y - c.oy);
+  const around = 2 * Math.PI * Math.max(rx, ry);
+  const n = Math.min(256, Math.max(12, Math.round(around / settings.drawSpacing)));
+  c.length = 0;
+  for (let k = 0; k <= n; k++) {
+    const a = (k / n) * 2 * Math.PI;
+    c.push(c.ox + rx * Math.cos(a), c.oy + ry * Math.sin(a));
+  }
   rebuildSegments();
 }
 
@@ -1440,7 +1460,7 @@ function updateModeButtons() {
   for (const key in modeButtons) {
     modeButtons[key].classList.toggle("active", key === mode);
   }
-  modeButtons.draw.textContent = lineTool ? "Line" : "Draw";
+  modeButtons.draw.textContent = { free: "Draw", line: "Line", circle: "Circle" }[drawKind];
   modeButtons.place.textContent =
     { emit: "Place: Emitter", kill: "Place: Remover", anchor: "Place: Anchor" }[placeKind];
 }
@@ -1528,6 +1548,7 @@ const TOOL_PANELS = {
     { key: "lineBounce", label: "Bounciness", min: 0, max: 1, step: 0.01 },
     { key: "drawSpacing", label: "Detail", min: 2, max: 30, step: 1 },
     { key: "lineLock", label: "Locked direction", toggle: true },
+    { key: "circleLock", label: "Perfect circle", toggle: true },
   ],
   erase: [
     { key: "eraserSize", label: "Eraser size (px)", min: 8, max: 160, step: 2 },
@@ -1585,7 +1606,7 @@ function toggleTool(key) {
   el.style.top = Math.min(top, innerHeight - h - 4) + "px";
 }
 
-// Double-tap Draw flips it between freehand and the straight Line tool.
+// Double-tap Draw cycles freehand → straight Line → Circle.
 // Timed by hand rather than dblclick, which iOS doesn't fire on buttons.
 let lastDrawTap = 0;
 
@@ -1593,7 +1614,7 @@ for (const key in modeButtons) {
   modeButtons[key].addEventListener("click", () => {
     if (openTool !== toolPanels[key]) closeTool();
     if (key === "draw" && mode === "draw" && performance.now() - lastDrawTap < 350) {
-      lineTool = !lineTool;
+      drawKind = { free: "line", line: "circle", circle: "free" }[drawKind];
       lastDrawTap = 0;
     } else if (key === "draw") lastDrawTap = performance.now();
     setMode(key);
