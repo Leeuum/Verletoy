@@ -156,6 +156,16 @@
       color: var(--btn-on-text);
     }
     #bar button:active { background: var(--btn-on-bg); }
+    /* Small gear hugging its mode button; opens that mode's settings. */
+    #bar button.cog {
+      min-width: 0;
+      padding: 0 calc(4px * var(--scale));
+      margin-left: calc(var(--bar-gap) * var(--scale) * -0.6);
+      background: none;
+      border-color: transparent;
+      font-size: calc(var(--btn-font) * var(--scale) * 0.85);
+      opacity: 0.7;
+    }
     #bar #grip {
       flex: 0 0 auto;
       align-self: stretch;
@@ -204,7 +214,7 @@
     }
 
     /* --------------------------------------------------------- mini menus */
-    /* Double-tap an emitter in Place mode, or a mode button in the toolbar.
+    /* Double-tap an emitter in Place mode, or a toolbar gear.
        Reuses .row so the sliders are the same fat touch targets as the side
        panel; half-transparent so particles behind it stay visible. */
 
@@ -415,9 +425,9 @@
 
   <div id="bar">
     <div id="grip" title="Drag to move the toolbar"></div>
-    <button id="m-emit">Emit</button>
-    <button id="m-draw">Draw</button>
-    <button id="m-erase">Erase</button>
+    <button id="m-emit">Emit</button><button class="cog" data-tool="emit" title="Emit settings">&#9881;</button>
+    <button id="m-draw">Draw</button><button class="cog" data-tool="draw" title="Draw settings">&#9881;</button>
+    <button id="m-erase">Erase</button><button class="cog" data-tool="erase" title="Erase settings">&#9881;</button>
     <button id="m-place">Place: Emitter</button>
     <div class="sep"></div>
     <button id="pause" title="Pause / play">&#9208;</button>

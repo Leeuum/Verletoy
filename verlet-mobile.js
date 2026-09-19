@@ -1001,7 +1001,7 @@ const active = { id: null, type: null, action: null };
 let lastTap = { t: -1e9, x: 0, y: 0 };
 let lastPenAt = -1e9;
 const PALM_GRACE = 700;   // ms after a pen event during which touches are ignored
-const DOUBLE_TAP = 350;   // ms window for a double-tap, on the canvas or a toolbar button
+const DOUBLE_TAP = 350;   // ms window for a double-tap on the canvas
 
 function penRecentlyUsed() {
   return performance.now() - lastPenAt < PALM_GRACE;
@@ -1491,7 +1491,7 @@ for (const control of CONTROLS) {
 
 // ------------------------------------------- toolbar mini panels
 //
-// Double-tap a mode button to hang that mode's settings above the toolbar, so
+// Tap a mode's gear to hang that mode's settings above the toolbar, so
 // the side panel keeps only world/solver/particles. Same .mini shell as the
 // emitter menu, one open at a time, and closed whenever the toolbar or the
 // viewport moves under it.
@@ -1553,23 +1553,15 @@ function toggleTool(key) {
   el.style.top = Math.min(top, innerHeight - h - 4) + "px";
 }
 
-// Second tap on the same button within DOUBLE_TAP opens its panel instead of
-// re-running setMode (which would flip Place's kind back).
-let lastModeTap = "", lastModeTapAt = 0;
-
 for (const key in modeButtons) {
   modeButtons[key].addEventListener("click", () => {
-    const now = performance.now();
-    if (lastModeTap === key && now - lastModeTapAt < DOUBLE_TAP) {
-      lastModeTap = "";
-      toggleTool(key);
-      return;
-    }
-    lastModeTap = key;
-    lastModeTapAt = now;
     if (openTool !== toolPanels[key]) closeTool();
     setMode(key);
   });
+}
+
+for (const cog of document.querySelectorAll("#bar .cog")) {
+  cog.addEventListener("click", () => toggleTool(cog.dataset.tool));
 }
 
 // Paused = time stops (no physics, no emitters); drawing still renders.
