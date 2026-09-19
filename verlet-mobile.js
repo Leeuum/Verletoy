@@ -31,6 +31,7 @@ const settings = {
 
   walls: true,
   strokeGravity: false,
+  strokeCollide: false,
 
   substeps: 3,
   passes: 2,
@@ -454,7 +455,7 @@ function constrainWalls() {
 // stroke array are moved in place, so drawing, erasing and the segment grid
 // keep treating strokes[] as the source of truth. Particles have mass 1; a
 // stroke weighs its area in particle areas.
-// ponytail: strokes don't collide with each other, add when gears need to mesh.
+// With strokeCollide on too, strokes also knock into each other.
 const BODY_FRICTION = 0.5;   // stroke vs canvas edge
 
 function initBody(pts) {
@@ -505,11 +506,103 @@ function moveStrokes(h) {
     }
     pts.cx = ncx; pts.cy = ncy;
 
-    if (settings.walls) wallBody(pts);
-    else if (pts.cy > H + 2000 || pts.cy < -2000 || pts.cx < -2000 || pts.cx > W + 2000) strokes.splice(o, 1);
+    if (!settings.walls && (pts.cy > H + 2000 || pts.cy < -2000 || pts.cx < -2000 || pts.cx > W + 2000)) {
+      strokes.splice(o, 1);
+    }
+  }
+  if (settings.strokeCollide) collideStrokes();
+  if (settings.walls) {
+    for (const pts of strokes) if (pts.m) wallBody(pts);
   }
   rebuildSegments();
   buildSegGrid();
+}
+
+// Each stroke's points are tested against the other stroke's segments (both
+// ways round). A point closer than one line thickness gets the same bounce +
+// friction impulse as a wall hit, but shared between the two bodies; then the
+// pair is pulled apart by its deepest overlap, split by mass.
+// ponytail: every overlapping pair is points × segments per substep, and a
+// line moving faster than its thickness per substep can tunnel through
+// another; add a segment grid lookup / swept test if either bites.
+function collideStrokes() {
+  const bodies = strokes.filter((b) => b.m);
+  const t = settings.lineThickness;
+  for (const b of bodies) {
+    b.x0 = b.y0 = Infinity; b.x1 = b.y1 = -Infinity;
+    for (let k = 0; k < b.length; k += 2) {
+      if (b[k] < b.x0) b.x0 = b[k]; if (b[k] > b.x1) b.x1 = b[k];
+      if (b[k + 1] < b.y0) b.y0 = b[k + 1]; if (b[k + 1] > b.y1) b.y1 = b[k + 1];
+    }
+  }
+  for (let i = 0; i < bodies.length; i++) {
+    for (let j = i + 1; j < bodies.length; j++) {
+      const A = bodies[i], B = bodies[j];
+      if (A.x0 > B.x1 + t || B.x0 > A.x1 + t || A.y0 > B.y1 + t || B.y0 > A.y1 + t) continue;
+      const deep = { pen: 0, nx: 0, ny: 0 };
+      pointsVsSegments(A, B, deep, 1);
+      pointsVsSegments(B, A, deep, -1);
+      if (deep.pen === 0) continue;
+      const share = A.m / (A.m + B.m);  // heavier body moves less
+      shiftBody(A, deep.nx * deep.pen * (1 - share), deep.ny * deep.pen * (1 - share));
+      shiftBody(B, -deep.nx * deep.pen * share, -deep.ny * deep.pen * share);
+    }
+  }
+}
+
+// Points of P against segments of S. The normal is stored pointing from B
+// towards A, so `sign` flips it when P is B.
+function pointsVsSegments(P, S, deep, sign) {
+  const t = settings.lineThickness, tSq = t * t;
+  const e = settings.lineBounce;
+  for (let k = 0; k < P.length; k += 2) {
+    const px = P[k], py = P[k + 1];
+    if (px < S.x0 - t || px > S.x1 + t || py < S.y0 - t || py > S.y1 + t) continue;
+
+    // Closest point on S to this point.
+    let best = tSq, qx = 0, qy = 0;
+    for (let m = 2; m < S.length; m += 2) {
+      const ax = S[m - 2], ay = S[m - 1];
+      const ex = S[m] - ax, ey = S[m + 1] - ay;
+      const lenSq = ex * ex + ey * ey;
+      let u = lenSq > 0 ? ((px - ax) * ex + (py - ay) * ey) / lenSq : 0;
+      if (u < 0) u = 0; else if (u > 1) u = 1;
+      const cx = ax + ex * u, cy = ay + ey * u;
+      const dSq = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+      if (dSq < best) { best = dSq; qx = cx; qy = cy; }
+    }
+    if (best >= tSq || best === 0) continue;
+
+    const dist = Math.sqrt(best);
+    const nx = (px - qx) / dist, ny = (py - qy) / dist;  // from S towards P
+    const pen = t - dist;
+    if (pen > deep.pen) { deep.pen = pen; deep.nx = nx * sign; deep.ny = ny * sign; }
+
+    // Relative velocity of P against S at the contact.
+    const prx = px - P.cx, pry = py - P.cy, srx = px - S.cx, sry = py - S.cy;
+    const rvx = (P.vx - P.w * pry) - (S.vx - S.w * sry);
+    const rvy = (P.vy + P.w * prx) - (S.vy + S.w * srx);
+    const vn = rvx * nx + rvy * ny;
+    if (vn >= 0) continue;
+
+    const pn = prx * ny - pry * nx, sn = srx * ny - sry * nx;
+    const kn = 1 / P.m + 1 / S.m + pn * pn / P.I + sn * sn / S.I;
+    const jn = -(1 + e) * vn / kn;
+    const tx = -ny, ty = nx;
+    const pt = prx * ty - pry * tx, st = srx * ty - sry * tx;
+    const kt = 1 / P.m + 1 / S.m + pt * pt / P.I + st * st / S.I;
+    let jt = -(rvx * tx + rvy * ty) / kt;
+    const cap = jn * BODY_FRICTION;
+    if (jt > cap) jt = cap; else if (jt < -cap) jt = -cap;
+    const jx = nx * jn + tx * jt, jy = ny * jn + ty * jt;
+    hitBody(P, px, py, jx, jy);
+    hitBody(S, px, py, -jx, -jy);
+  }
+}
+
+function shiftBody(b, sx, sy) {
+  for (let k = 0; k < b.length; k += 2) { b[k] += sx; b[k + 1] += sy; }
+  b.cx += sx; b.cy += sy;
 }
 
 // Every point past an edge gets a bounce + friction impulse if it is still
@@ -543,10 +636,7 @@ function wallBody(b) {
   let sx = 0, sy = 0;
   if (minX < pad) sx = pad - minX; else if (maxX > W - pad) sx = W - pad - maxX;
   if (minY < pad) sy = pad - minY; else if (maxY > H - pad) sy = H - pad - maxY;
-  if (sx || sy) {
-    for (let k = 0; k < b.length; k += 2) { b[k] += sx; b[k + 1] += sy; }
-    b.cx += sx; b.cy += sy;
-  }
+  if (sx || sy) shiftBody(b, sx, sy);
 }
 
 function step(seconds) {
@@ -1093,6 +1183,7 @@ const CONTROLS = [
   { key: "maxSpeed", label: "Speed limit (px/s)", min: 500, max: 10000, step: 100 },
   { key: "walls", label: "Canvas collisions", toggle: true },
   { key: "strokeGravity", label: "Drawn lines fall", toggle: true },
+  { key: "strokeCollide", label: "Falling lines hit each other", toggle: true },
 
   { group: "Solver" },
   { key: "substeps", label: "Substeps per frame", min: 1, max: 12, step: 1 },
