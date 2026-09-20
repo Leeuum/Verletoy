@@ -50,6 +50,7 @@ const settings = {
   emitPerBurst: 2,
   spread: 8,
   emitSpeed: 1200,
+  gridEmit: false,   // burst lands on a square lattice instead of scattered
 
   lineThickness: 8,
   lineFriction: 0.85,
@@ -832,7 +833,15 @@ function trackPointer(e) {
   point.y = (e.clientY - rect.top) * (H / rect.height);
 }
 
-function spawn(x, y, vx = 0, vy = 0, spread = settings.spread) {
+// Evenly spaced fraction of [-0.5, 0.5] for index `idx` of `d` slots; a single
+// slot sits dead centre rather than on an edge.
+function cellFrac(idx, d) {
+  return d > 1 ? idx / (d - 1) - 0.5 : 0;
+}
+
+// `n` of `total` is the particle's place in this burst — only used by gridEmit,
+// which lays the burst out on a lattice of side `spread` instead of scattering.
+function spawn(x, y, vx = 0, vy = 0, spread = settings.spread, n = 0, total = 1) {
   const limit = settings.maxParticles;
   let i;
   if (count < limit) {
@@ -843,8 +852,15 @@ function spawn(x, y, vx = 0, vy = 0, spread = settings.spread) {
   }
 
   const s = spread;
-  posX[i] = x + (Math.random() - 0.5) * s;
-  posY[i] = y + (Math.random() - 0.5) * s;
+  if (settings.gridEmit) {
+    const cols = Math.ceil(Math.sqrt(total));
+    const rows = Math.ceil(total / cols);
+    posX[i] = x + cellFrac(n % cols, cols) * s;
+    posY[i] = y + cellFrac(Math.floor(n / cols), rows) * s;
+  } else {
+    posX[i] = x + (Math.random() - 0.5) * s;
+    posY[i] = y + (Math.random() - 0.5) * s;
+  }
 
   // Velocity is implied by pos - prev, so a launch speed is set by placing
   // prev one substep's worth of travel behind the spawn point.
@@ -1058,7 +1074,8 @@ function beginAction(action) {
   if (action === "emit") {
     emitting = true;
     emitTimer = 0;
-    for (let n = 0; n < settings.emitPerBurst; n++) spawn(point.x, point.y);
+    for (let n = 0; n < settings.emitPerBurst; n++)
+      spawn(point.x, point.y, 0, 0, settings.spread, n, settings.emitPerBurst);
   } else if (action === "draw") {
     startStroke(point.x, point.y);
   } else if (action === "place") {
@@ -1542,6 +1559,7 @@ const TOOL_PANELS = {
     { key: "emitInterval", label: "Rate", min: 5, max: 300, step: 5 },
     { key: "emitPerBurst", label: "Particles", min: 1, max: 40, step: 1 },
     { key: "spread", label: "Scatter", min: 0, max: 60, step: 1 },
+    { key: "gridEmit", label: "Grid spawn", toggle: true },
   ],
   draw: [
     { key: "lineThickness", label: "Thickness", min: 1, max: 40, step: 1 },
@@ -1728,7 +1746,8 @@ function frame(now) {
   if (emitting) {
     emitTimer += dt;
     while (emitTimer >= settings.emitInterval) {
-      for (let n = 0; n < settings.emitPerBurst; n++) spawn(point.x, point.y);
+      for (let n = 0; n < settings.emitPerBurst; n++)
+      spawn(point.x, point.y, 0, 0, settings.spread, n, settings.emitPerBurst);
       emitTimer -= settings.emitInterval;
     }
   }
@@ -1738,7 +1757,7 @@ function frame(now) {
     if (o.kind !== "emit") continue;
     o.t += dt;
     while (o.t >= o.interval) {
-      for (let n = 0; n < o.burst; n++) spawn(o.x, o.y, o.vx, o.vy, o.spread);
+      for (let n = 0; n < o.burst; n++) spawn(o.x, o.y, o.vx, o.vy, o.spread, n, o.burst);
       o.t -= o.interval;
     }
   }
