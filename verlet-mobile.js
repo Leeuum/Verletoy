@@ -853,10 +853,12 @@ function spawn(x, y, vx = 0, vy = 0, spread = settings.spread, n = 0, total = 1)
 
   const s = spread;
   if (settings.gridEmit) {
+    // The tiny jitter keeps repeat bursts from landing exactly on top of each
+    // other: collide() skips coincident pairs, so they'd never separate.
     const cols = Math.ceil(Math.sqrt(total));
     const rows = Math.ceil(total / cols);
-    posX[i] = x + cellFrac(n % cols, cols) * s;
-    posY[i] = y + cellFrac(Math.floor(n / cols), rows) * s;
+    posX[i] = x + cellFrac(n % cols, cols) * s + (Math.random() - 0.5) * 0.01;
+    posY[i] = y + cellFrac(Math.floor(n / cols), rows) * s + (Math.random() - 0.5) * 0.01;
   } else {
     posX[i] = x + (Math.random() - 0.5) * s;
     posY[i] = y + (Math.random() - 0.5) * s;
